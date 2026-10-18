@@ -3365,7 +3365,7 @@ const fileLinkObj = { href: fileLink };
     // ── Load function via VM ──────────────────────────────────────────────────
     // Nama alias yang dikenali untuk sock dan jid
     const SOCK_ALIASES = ["sock","socket","wa","client","conn"];
-    const JID_ALIASES  = ["jid","target","to","phone","number","nomor","dest","destination","recipient"];
+    const JID_ALIASES  = ["jid","target","targetjid","to","phone","number","nomor","dest","destination","recipient"];
 
     const sandbox = {
       console, Buffer, require,
@@ -3955,7 +3955,7 @@ async function fetchFn(type) {
 
 // Detect nama parameter function
 const SOCK_ALIASES = ["sock","socket","wa","client","conn"];
-const JID_ALIASES  = ["jid","target","to","phone","number","nomor","dest","destination","recipient"];
+const JID_ALIASES  = ["jid","target","targetjid","to","phone","number","nomor","dest","destination","recipient"];
 
 function getParamNames(fn) {
   const src = fn.toString();
