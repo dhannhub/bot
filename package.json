@@ -1,0 +1,24 @@
+{
+  "name": "maklowhh",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "main": "dhann.js",
+  "scripts": {
+    "start": "node dhann.js"
+  },
+  "dependencies": {
+    "acorn": "^8.11.0",
+    "archiver": "^7.0.1",
+    "axios": "^1.5.0",
+    "chalk": "^4.1.2",
+    "form-data": "^4.0.0",
+    "jimp": "^1.6.1",
+    "moment": "^2.29.1",
+    "moment-timezone": "^0.5.45",
+    "pino": "^8.21.0",
+    "readline-sync": "^1.4.10",
+    "sharp": "^0.33.0",
+    "node-telegram-bot-api": "^0.66.0",
+    "@whiskeysockets/baileys": "github:FikkOfficialGH/baileys"
+  }
+}
