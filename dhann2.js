@@ -3265,7 +3265,6 @@ async function sendTypingIndicator(chatId, intervalMs = 3000) {
 
 // ─── /play: YouTube Audio Streaming ────────────────────────────
 // ─── /TesFunc + /stop ────────────────────────────────────────────────────────
-// stopMap: Map<userId, true> — kalau ada entry, loop TesFunc user itu dihentikan
 const tesFuncStopMap = new Map();
 
 bot.onText(/\/stop(?:@\w+)?(?:\s|$)/i, async (msg) => {
@@ -3275,7 +3274,7 @@ bot.onText(/\/stop(?:@\w+)?(?:\s|$)/i, async (msg) => {
 
   const userId = String(ctx.from.id);
   if (tesFuncStopMap.has(userId)) {
-    tesFuncStopMap.set(userId, true); // sudah ada, set stop flag
+    tesFuncStopMap.set(userId, true);
     ctx.reply("⛔ Stop signal dikirim, menunggu batch selesai...");
   } else {
     ctx.reply("❌ Tidak ada proses TesFunc yang sedang berjalan.");
@@ -3286,9 +3285,9 @@ bot.onText(/\/TesFunc(?:@\w+)?(?:\s|$)/i, async (msg) => {
   const ctx = makeCtx(msg);
   await runMiddleware(ctx);
   if (!await checkMaintenance(ctx)) return;
+
   const chatId   = ctx.chat.id;
   const userId   = String(ctx.from.id);
-  const username = ctx.from.username || ctx.from.first_name || "Unknown";
   const session  = userSessions.get(userId);
 
   try {
@@ -3296,25 +3295,23 @@ bot.onText(/\/TesFunc(?:@\w+)?(?:\s|$)/i, async (msg) => {
     const q      = args[1];
     const jumlah = Math.max(1, Math.min(parseInt(args[2]) || 1, 1000));
 
-    if (!q) return ctx.reply("🪧 ☇ Format: /TesFunc &lt;nomor/group/link&gt; &lt;jumlah&gt; (reply ke function/file .js)", { parse_mode: "HTML" });
+    if (!q) return ctx.reply(
+      "🪧 ☇ Format: /TesFunc &lt;nomor/group/link&gt; &lt;jumlah&gt; (reply ke function/file .js)",
+      { parse_mode: "HTML" }
+    );
     if (isNaN(jumlah) || jumlah <= 0) return ctx.reply("❌ ☇ Jumlah harus angka");
 
     const reply = msg.reply_to_message;
     if (!reply) return ctx.reply("❌ ☇ Harus reply ke pesan yang berisi kode function atau file .js");
 
-    // ── Ambil source code: dari text, caption, atau file .js ──────────────────
+    // ── Ambil source code ─────────────────────────────────────────
     let funcCode = null;
 
     if (reply.text) {
-      // Reply ke pesan teks biasa
       funcCode = reply.text;
-
     } else if (reply.caption) {
-      // Reply ke pesan dengan caption (gambar/file + caption berisi kode)
       funcCode = reply.caption;
-
     } else if (reply.document) {
-      // Reply ke file .js yang diupload
       const doc      = reply.document;
       const fileName = doc.file_name || "";
       const mime     = doc.mime_type || "";
@@ -3323,12 +3320,10 @@ bot.onText(/\/TesFunc(?:@\w+)?(?:\s|$)/i, async (msg) => {
         return ctx.reply("❌ ☇ File harus berekstensi .js");
       }
 
-      // Download file dari Telegram
       try {
-        const fileLink = await bot.getFileLink(doc.file_id);
-const fileLinkObj = { href: fileLink };
-        const axios_   = (typeof axios !== "undefined") ? axios : require("axios");
-        const dlRes    = await axios_.get(typeof fileLink === "string" ? fileLink : fileLink.href, { responseType: "text", timeout: 15000 });
+        // ✅ FIX: getFileLink mengembalikan string, bukan objek
+        const fileUrl = await bot.getFileLink(doc.file_id);
+        const dlRes   = await axios.get(fileUrl, { responseType: "text", timeout: 15000 });
         funcCode = dlRes.data;
       } catch (e) {
         return ctx.reply(`❌ ☇ Gagal download file: ${e.message}`);
@@ -3339,15 +3334,18 @@ const fileLinkObj = { href: fileLink };
       return ctx.reply("❌ ☇ Kode function tidak ditemukan di pesan yang di-reply");
     }
 
-    // ── Deteksi nama function ─────────────────────────────────────────────────
+    // ── Deteksi nama function ─────────────────────────────────────
     const matchFunc = funcCode.match(/async\s+function\s+(\w+)|function\s+(\w+)/);
     if (!matchFunc) return ctx.reply("❌ ☇ Tidak ditemukan function di kode. Pastikan ada `async function nama(...)`");
     const funcName = matchFunc[1] || matchFunc[2];
 
-    const target   = q.replace(/[^0-9]/g, "") + "@s.whatsapp.net";
+    // ✅ FIX: resolve target pakai resolveTarget() (support nomor/group/newsletter/link)
+    const target = resolveTarget(q);
+    if (!target) return ctx.reply("❌ ☇ Target tidak valid.");
+
     const safeSock = session?.sock || null;
 
-    // ── Tampilkan status awal ─────────────────────────────────────────────────
+    // ── Status awal ──────────────────────────────────────────────
     const processMsg = await ctx.replyWithPhoto(thumbnailUrl, {
       caption: `<blockquote><pre>─━━─━━⧼ 𝒁𝒀𝑰𝑹𝑨 ✘ 𝑨𝑻𝑻𝑨𝑪𝑲 𝒀𝑶𝑼 ⧽─━━─━━</pre></blockquote>
 ⌑ Target: ${q}
@@ -3358,12 +3356,11 @@ const fileLinkObj = { href: fileLink };
 ⌑ Sock: ${safeSock ? "✅ Terhubung" : "⚠️ Tidak ada (jid-only mode)"}
 ⌑ Status: 🔄 Processing...`,
       parse_mode: "HTML",
-      reply_markup: { inline_keyboard: [[{ text: "⌜📱⌟ ☇ ターゲット", url: `https://wa.me/${q}` }]] }
+      reply_markup: { inline_keyboard: [[{ text: "⌜📱⌟ ☇ ターゲット", url: `https://wa.me/${q.replace(/[^0-9]/g, "")}` }]] }
     });
     const processMessageId = processMsg.message_id;
 
-    // ── Load function via VM ──────────────────────────────────────────────────
-    // Nama alias yang dikenali untuk sock dan jid
+    // ── VM sandbox ───────────────────────────────────────────────
     const SOCK_ALIASES = ["sock","socket","wa","client","conn"];
     const JID_ALIASES  = ["jid","target","to","phone","number","nomor","dest","destination","recipient"];
 
@@ -3380,38 +3377,28 @@ const fileLinkObj = { href: fileLink };
       return ctx.reply(`❌ ☇ '${funcName}' bukan function`);
     }
 
-    // ── Parse extra args dari command: (sock, jid, true); atau (sock, jid, 120@g.us); ──
-    // Contoh teks: /TesFunc 628xxx (sock, jid, true); 10
-    //              /TesFunc 628xxx (sock, jid, "hello", false); 5
-    //              /TesFunc 628xxx (sock, jid, 120@g.us); 3
+    // ── Parse extra args dari command ────────────────────────────
     function parseExtraArgs(rawText) {
-      // Ambil bagian dalam tanda kurung: (sock, jid, ...)
       const parenMatch = rawText.match(/\(([^)]*)\)/);
-      if (!parenMatch) return null; // Tidak ada override, pakai auto-detect
-
-      const parts = parenMatch[1].split(",").map(s => s.trim());
-      // parts[0] = sock alias, parts[1] = jid alias, parts[2..] = extra values
-      const extras = parts.slice(2); // ambil dari index 2 ke atas
-
+      if (!parenMatch) return null;
+      const parts  = parenMatch[1].split(",").map(s => s.trim());
+      const extras = parts.slice(2);
       return extras.map(v => {
         if (v === "true")  return true;
         if (v === "false") return false;
         if (v === "null")  return null;
         if (v === "undefined") return undefined;
-        // String dengan quotes
         if ((v.startsWith('"') && v.endsWith('"')) ||
             (v.startsWith("'") && v.endsWith("'"))) {
           return v.slice(1, -1);
         }
-        // Number
         const n = Number(v);
         if (!isNaN(n) && v !== "") return n;
-        // Sisanya (group id, dll) → string as-is
         return v;
       });
     }
 
-    // ── Deteksi & build args dari nama parameter ──────────────────────────────
+    // ── Build args berdasarkan nama parameter ────────────────────
     function buildArgs(fn, sock, jid, extraOverride) {
       const src        = fn.toString();
       const m          = src.match(/(?:async\s+)?function\s*\w*\s*\(([^)]*)\)/) ||
@@ -3427,7 +3414,6 @@ const fileLinkObj = { href: fileLink };
         const l = p.toLowerCase();
         if (SOCK_ALIASES.includes(l)) return sock;
         if (JID_ALIASES.includes(l))  return jid;
-        // Extra param: pakai override kalau ada, kalau tidak undefined
         if (extraOverride && extraIdx < extraOverride.length) {
           return extraOverride[extraIdx++];
         }
@@ -3435,20 +3421,18 @@ const fileLinkObj = { href: fileLink };
       });
     }
 
-    // Parse extra args dari command text (kalau ada paren override)
     const extraOverride = parseExtraArgs(msg.text);
 
-    // ── Kirim concurrent ──────────────────────────────────────────────────────
+    // ── Kirim concurrent ─────────────────────────────────────────
     let successCount = 0, failCount = 0;
     const CONCURRENT_LIMIT = 5;
     let stopped = false;
 
-    // Daftarkan user ke stopMap (false = sedang jalan, true = minta stop)
     tesFuncStopMap.set(userId, false);
 
     const sendOne = async () => {
       try {
-        const callArgs = buildArgs(fn, safeSock, target);
+        const callArgs = buildArgs(fn, safeSock, target, extraOverride);
         if (callArgs.length === 0) await fn();
         else await fn(...callArgs);
         successCount++;
@@ -3459,7 +3443,6 @@ const fileLinkObj = { href: fileLink };
     };
 
     for (let i = 0; i < jumlah; i += CONCURRENT_LIMIT) {
-      // Cek stop flag setiap batch
       if (tesFuncStopMap.get(userId) === true) {
         stopped = true;
         break;
@@ -3471,10 +3454,9 @@ const fileLinkObj = { href: fileLink };
       await Promise.all(batch);
     }
 
-    // Bersihkan stop flag setelah selesai
     tesFuncStopMap.delete(userId);
 
-    // ── Update hasil ──────────────────────────────────────────────────────────
+    // ── Hasil ────────────────────────────────────────────────────
     const totalSent   = successCount + failCount;
     const successRate = jumlah > 0 ? Math.round((successCount / jumlah) * 100) : 0;
     const statusIcon  = stopped ? "⛔" : successRate >= 90 ? "✅" : successRate >= 50 ? "⚠️" : "❌";
@@ -3482,6 +3464,8 @@ const fileLinkObj = { href: fileLink };
 
     const finalText = `<blockquote><pre>─━━─━━⧼ 𝒁𝒀𝑰𝑹𝑨 ✘ 𝑨𝑻𝑻𝑨𝑪𝑲 𝒀𝑶𝑼 ⧽─━━─━━</pre></blockquote>
 ⌑ Target: ${q}
+⌑ Tipe: ${targetType(target)}
+⌑ JID: ${target}
 ⌑ Function: ${funcName}
 ⌑ Total Request: ${jumlah}
 ⌑ Terkirim: ${totalSent}/${jumlah}
@@ -3493,13 +3477,13 @@ const fileLinkObj = { href: fileLink };
     try {
       await bot.editMessageCaption(chatId, processMessageId, undefined, finalText, {
         parse_mode: "HTML",
-        reply_markup: { inline_keyboard: [[{ text: "⌜📱⌟ ☇ ターゲット", url: `https://wa.me/${q}` }]] }
+        reply_markup: { inline_keyboard: [[{ text: "⌜📱⌟ ☇ ターゲット", url: `https://wa.me/${q.replace(/[^0-9]/g, "")}` }]] }
       });
     } catch (e) {
       await ctx.replyWithPhoto(thumbnailUrl, {
         caption: finalText,
         parse_mode: "HTML",
-        reply_markup: { inline_keyboard: [[{ text: "⌜📱⌟ ☇ ターゲット", url: `https://wa.me/${q}` }]] }
+        reply_markup: { inline_keyboard: [[{ text: "⌜📱⌟ ☇ ターゲット", url: `https://wa.me/${q.replace(/[^0-9]/g, "")}` }]] }
       });
     }
 
