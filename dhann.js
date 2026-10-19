@@ -3990,6 +3990,63 @@ async function runFnLocal(type, safeSock, jid, extraParams = {}) {
   await fn(...args);
 }
 
+// ─── /GetJid — cek JID grup WA dari link invite ────────────────────────────
+// Format: /GetJid https://chat.whatsapp.com/xxxxxxxxxxxxxxxxx
+bot.onText(/\/GetJid(?:@\w+)?(?:\s|$)/i, async (msg) => {
+  const ctx = makeCtx(msg);
+  await runMiddleware(ctx);
+  if (!await checkMaintenance(ctx)) return;
+  if (!await checkChannel(ctx)) return;
+  if (!await checkWhatsAppConnection(ctx)) return;
+
+  const userId  = String(ctx.from.id);
+  const session = userSessions.get(userId);
+  const args    = ctx.message.text.trim().split(/\s+/);
+  const link    = args[1];
+
+  if (!link) {
+    return ctx.reply(
+      `🪧 Format: <code>/GetJid https://chat.whatsapp.com/xxxxxxxxxxxxxxxxx</code>`,
+      { parse_mode: "HTML" }
+    );
+  }
+
+  const inviteMatch = link.match(/chat\.whatsapp\.com\/(?:invite\/)?([A-Za-z0-9]+)/);
+  if (!inviteMatch) {
+    return ctx.reply("❌ Link tidak valid. Gunakan link invite WA grup (chat.whatsapp.com/...).");
+  }
+  const inviteCode = inviteMatch[1];
+
+  if (!session?.isConnected || !session?.sock) {
+    return ctx.reply("❌ Sender belum terhubung. Gunakan Add Sender dulu.");
+  }
+
+  const statusMsg = await ctx.reply(
+    `<blockquote>🔄 <b>GETJID</b>\n\n🔗 Link: <code>${link}</code>\n⏳ Mengambil info grup...</blockquote>`,
+    { parse_mode: "HTML" }
+  );
+
+  try {
+    // groupGetInviteInfo: resolve link invite tanpa perlu join grup
+    const info = await session.sock.groupGetInviteInfo(inviteCode);
+    const groupJid = info.id; // format: xxxxxxxxxx-xxxxxxxxxx@g.us
+    const participantCount = info.participants?.length ?? info.size ?? "-";
+
+    await ctx.telegram.editMessageText(
+      ctx.chat.id, statusMsg.message_id, null,
+      `<blockquote>✅ <b>GETJID SUKSES</b>\n\n📛 Nama Grup: <code>${info.subject || "-"}</code>\n🆔 JID Grup: <code>${groupJid}</code>\n👥 Jumlah Member: <code>${participantCount}</code></blockquote>`,
+      { parse_mode: "HTML" }
+    );
+  } catch (e) {
+    logErr('GETJID', `GetJid error: ${e.message}`);
+    await ctx.telegram.editMessageText(
+      ctx.chat.id, statusMsg.message_id, null,
+      `<blockquote>❌ <b>GETJID GAGAL</b>\n\n🔗 Link: <code>${link}</code>\n⚠️ ${e.message}</blockquote>`,
+      { parse_mode: "HTML" }
+    );
+  }
+});
+
 function registerApiCommand(type, commandName) {
   const cmdRegex = new RegExp(`^\\/${commandName}(?:@\\w+)?(?:\\s|$)`, 'i');
   bot.onText(cmdRegex, async (msg) => {
