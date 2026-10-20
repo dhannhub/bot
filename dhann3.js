@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════
-// RICH CARD - port LANGSUNG dari src/lib/richCard.js (userbot zip), 1:1.
+// RICH CARD - port LANGSUNG dari src/lib/richCard.js (userbot zip), 1:1s.
 // Helper buat nyusun pesan "kartu" (judul + tabel + catatan) jadi SATU
 // pesan HTML yang VALID buat Telegram Bot API.
 //
@@ -1085,17 +1085,27 @@ bot.onText(/\/start(?:@\w+)?(?:\s|$)/i, async (msg) => {
   }
 
   // ─── Tabel status bot pakai rich table (gaya richCard.js) ───
-  const statusTable = buildRichTable(
-    ['Field', 'Value'],
-    [
-      ['Sender', senderStatus],
-      ['Runtime', formatRuntime()],
-      ['Memory', formatMemory()],
-      ['Restart In', getNextRestartIn()],
-    ]
-  );
-
-  const menuMessage = `<blockquote>✨ <b>𝗜𝗡𝗙𝗢𝗥𝗠𝗔𝗧𝗜𝗢𝗡</b>\n\n👨‍💻 Developer  : @maklowhh\n🔢 Version    : 3.0\n💻 Language   : Javascript\n⌨️ Prefix     : /</blockquote>\n\n<b>🤖 𝐁𝐎𝐓 𝐒𝐓𝐀𝐓𝐔𝐒</b>\n<pre>${statusTable}</pre>\n\n<blockquote>🎯 Pilih menu di bawah untuk mulai!</blockquote>`;
+  const menuMessage = buildCard({
+    title: '✨ INFORMATION',
+    headers: ['Field', 'Value'],
+    rows: [
+      ['Developer', '@maklowhh'],
+      ['Version', '3.0'],
+      ['Language', 'Javascript'],
+      ['Prefix', '/'],
+    ],
+    note: buildCard({
+      title: '𝐁𝐎𝐓 𝐒𝐓𝐀𝐓𝐔𝐒',
+      headers: ['Field', 'Value'],
+      rows: [
+        ['Sender', senderStatus],
+        ['Runtime', formatRuntime()],
+        ['Memory', formatMemory()],
+        ['Restart In', getNextRestartIn()],
+      ],
+      note: '🎯 Pilih menu di bawah untuk mulai!',
+    }),
+  });
 
   // ─── Animasi loading sebelum landing di menu final ───
   // Kirim foto dulu dengan caption "loading", lalu edit caption-nya
