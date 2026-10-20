@@ -1,3 +1,38 @@
+// ─── RICH TABLE HELPER (gaya richCard.js — box-drawing table buat <pre>) ────
+// Telegram Bot API cuma support tag HTML terbatas (<b>,<i>,<u>,<s>,<code>,
+// <pre>,<a>,<tg-spoiler>,<blockquote>). "Tabel" di sini ditiru pake <pre>
+// (blok monospace) + box-drawing characters (┌─┬─┐│├─┼─┤└─┴─┘), teknik
+// standar yang beneran jalan di Telegram (bukan <table> yang gak didukung).
+function __escHtml(text) {
+  return String(text ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+function __padCell(text, width) {
+  const str = String(text ?? '');
+  return str.length >= width ? str : str + ' '.repeat(width - str.length);
+}
+function buildRichTable(headers, rows) {
+  const escapedHeaders = headers.map((h) => __escHtml(h));
+  const escapedRows = rows.map((r) => r.map((c) => __escHtml(c)));
+  const allRows = [escapedHeaders, ...escapedRows];
+  const colWidths = escapedHeaders.map((_, i) =>
+    Math.max(...allRows.map((r) => String(r[i] ?? '').length))
+  );
+  const renderRow = (r) =>
+    '│ ' + r.map((cell, i) => __padCell(cell, colWidths[i])).join(' │ ') + ' │';
+  const borderLine = (l, m, r) =>
+    l + colWidths.map((w) => '─'.repeat(w + 2)).join(m) + r;
+  return [
+    borderLine('┌', '┬', '┐'),
+    renderRow(escapedHeaders),
+    borderLine('├', '┼', '┤'),
+    ...escapedRows.map(renderRow),
+    borderLine('└', '┴', '┘'),
+  ].join('\n');
+}
+
 // ─── CALLBACK QUERY DISPATCHER ──────────────────────────────────────────────
 // Kumpulan semua __action handlers yang didaftarkan
 const __actionHandlers = new Map();
@@ -1005,12 +1040,60 @@ bot.onText(/\/start(?:@\w+)?(?:\s|$)/i, async (msg) => {
     }
   }
 
-  const menuMessage = `<blockquote>✨ <b>𝗜𝗡𝗙𝗢𝗥𝗠𝗔𝗧𝗜𝗢𝗡</b>\n\n👨‍💻 Developer  : @maklowhh\n🔢 Version    : 3.0\n💻 Language   : Javascript\n⌨️ Prefix     : /</blockquote>\n\n<blockquote>🤖 <b>𝐁𝐎𝐓 𝐒𝐓𝐀𝐓𝐔𝐒</b>\n━━━━━━━━━━━━━━━━━━━━\n📱 Sender Kamu : ${senderStatus}\n⏱️ Runtime     : ${formatRuntime()}\n💾 Memory      : ${formatMemory()}\n🔄 Restart In  : ${getNextRestartIn()}\n━━━━━━━━━━━━━━━━━━━━</blockquote>\n\n<blockquote>🎯 Pilih menu di bawah untuk mulai!</blockquote>`;
+  // ─── Tabel status bot pakai rich table (gaya richCard.js) ───
+  const statusTable = buildRichTable(
+    ['Field', 'Value'],
+    [
+      ['Sender', senderStatus],
+      ['Runtime', formatRuntime()],
+      ['Memory', formatMemory()],
+      ['Restart In', getNextRestartIn()],
+    ]
+  );
 
-  return ctx.replyWithPhoto(thumbnailUrl, {
-    caption: menuMessage,
-    parse_mode: "HTML",
-    reply_markup: mainMenuKeyboard(isOwner)
+  const menuMessage = `<blockquote>✨ <b>𝗜𝗡𝗙𝗢𝗥𝗠𝗔𝗧𝗜𝗢𝗡</b>\n\n👨‍💻 Developer  : @maklowhh\n🔢 Version    : 3.0\n💻 Language   : Javascript\n⌨️ Prefix     : /</blockquote>\n\n<b>🤖 𝐁𝐎𝐓 𝐒𝐓𝐀𝐓𝐔𝐒</b>\n<pre>${statusTable}</pre>\n\n<blockquote>🎯 Pilih menu di bawah untuk mulai!</blockquote>`;
+
+  // ─── Animasi loading sebelum landing di menu final ───
+  // Kirim foto dulu dengan caption "loading", lalu edit caption-nya
+  // bertahap (gaya progress bar), baru landing ke tampilan final + tombol.
+  const loadingFrames = [
+    '⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜ 0%',
+    '🟦🟦⬜⬜⬜⬜⬜⬜⬜⬜ 20%',
+    '🟦🟦🟦🟦⬜⬜⬜⬜⬜⬜ 40%',
+    '🟦🟦🟦🟦🟦🟦⬜⬜⬜⬜ 60%',
+    '🟦🟦🟦🟦🟦🟦🟦🟦⬜⬜ 80%',
+    '🟦🟦🟦🟦🟦🟦🟦🟦🟦🟦 100%',
+  ];
+
+  const sentMsg = await ctx.replyWithPhoto(thumbnailUrl, {
+    caption: `<blockquote>🚀 <b>Memuat Bot MAKLOWHH...</b>\n\n${loadingFrames[0]}</blockquote>`,
+    parse_mode: "HTML"
+  });
+
+  for (let i = 1; i < loadingFrames.length; i++) {
+    await new Promise(r => setTimeout(r, 180));
+    await ctx.telegram.editMessageCaption(
+      ctx.chat.id, sentMsg.message_id, null,
+      `<blockquote>🚀 <b>Memuat Bot MAKLOWHH...</b>\n\n${loadingFrames[i]}</blockquote>`,
+      { parse_mode: "HTML" }
+    ).catch(() => {});
+  }
+
+  await new Promise(r => setTimeout(r, 150));
+  return ctx.telegram.editMessageCaption(
+    ctx.chat.id, sentMsg.message_id, null,
+    menuMessage,
+    {
+      parse_mode: "HTML",
+      reply_markup: mainMenuKeyboard(isOwner)
+    }
+  ).catch(() => {
+    // fallback kalau edit gagal (misal caption kepanjangan) — kirim pesan baru
+    return ctx.replyWithPhoto(thumbnailUrl, {
+      caption: menuMessage,
+      parse_mode: "HTML",
+      reply_markup: mainMenuKeyboard(isOwner)
+    });
   });
 });
 
