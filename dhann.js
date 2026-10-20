@@ -1,8 +1,21 @@
-// ─── RICH TABLE HELPER (gaya richCard.js — box-drawing table buat <pre>) ────
-// Telegram Bot API cuma support tag HTML terbatas (<b>,<i>,<u>,<s>,<code>,
-// <pre>,<a>,<tg-spoiler>,<blockquote>). "Tabel" di sini ditiru pake <pre>
-// (blok monospace) + box-drawing characters (┌─┬─┐│├─┼─┤└─┴─┘), teknik
-// standar yang beneran jalan di Telegram (bukan <table> yang gak didukung).
+// ═══════════════════════════════════════════════════════════════════════
+// RICH CARD - port LANGSUNG dari src/lib/richCard.js (userbot zip), 1:1.
+// Helper buat nyusun pesan "kartu" (judul + tabel + catatan) jadi SATU
+// pesan HTML yang VALID buat Telegram Bot API.
+//
+// Telegram Bot API cuma support tag HTML TERBATAS di parse_mode:'HTML' -
+// <b>, <i>, <u>, <s>, <code>, <pre>, <a>, <tg-spoiler>, <blockquote>.
+// GAK ADA <table>, <img>, <h2>, dst. "Tabel" di sini ditiru pake <pre>
+// (blok monospace) + box-drawing characters (┌─┬─┐│├─┼─┤└─┴─┘).
+//
+// CARA PAKE (sama persis kayak di userbot):
+//   const html = buildCard({
+//     title: '📋 Daftar Grup',
+//     headers: ['No', 'Nama', 'Target?'],
+//     rows: [['1', 'Grup A', 'Ya'], ['2', 'Grup B', 'Tidak']],
+//     note: 'Total: 2 grup',
+//   });
+// ═══════════════════════════════════════════════════════════════════════
 function __escHtml(text) {
   return String(text ?? '')
     .replace(/&/g, '&amp;')
@@ -13,24 +26,55 @@ function __padCell(text, width) {
   const str = String(text ?? '');
   return str.length >= width ? str : str + ' '.repeat(width - str.length);
 }
-function buildRichTable(headers, rows) {
+function buildTableText(headers, rows) {
   const escapedHeaders = headers.map((h) => __escHtml(h));
   const escapedRows = rows.map((r) => r.map((c) => __escHtml(c)));
   const allRows = [escapedHeaders, ...escapedRows];
-  const colWidths = escapedHeaders.map((_, i) =>
-    Math.max(...allRows.map((r) => String(r[i] ?? '').length))
+
+  const colWidths = escapedHeaders.map((_, colIndex) =>
+    Math.max(...allRows.map((r) => String(r[colIndex] ?? '').length))
   );
+
   const renderRow = (r) =>
     '│ ' + r.map((cell, i) => __padCell(cell, colWidths[i])).join(' │ ') + ' │';
-  const borderLine = (l, m, r) =>
-    l + colWidths.map((w) => '─'.repeat(w + 2)).join(m) + r;
+
+  const borderLine = (left, mid, right) =>
+    left + colWidths.map((w) => '─'.repeat(w + 2)).join(mid) + right;
+
+  const topBorder = borderLine('┌', '┬', '┐');
+  const headerSeparator = borderLine('├', '┼', '┤');
+  const bottomBorder = borderLine('└', '┴', '┘');
+
   return [
-    borderLine('┌', '┬', '┐'),
+    topBorder,
     renderRow(escapedHeaders),
-    borderLine('├', '┼', '┤'),
+    headerSeparator,
     ...escapedRows.map(renderRow),
-    borderLine('└', '┴', '┘'),
+    bottomBorder,
   ].join('\n');
+}
+function buildCard({ title, subtitle, headers, rows, note }) {
+  const parts = [];
+  if (title) parts.push(`<b>${title}</b>`);
+  if (subtitle) parts.push(subtitle);
+  if (headers && rows && rows.length) {
+    parts.push(`<pre>${buildTableText(headers, rows)}</pre>`);
+  }
+  if (note) parts.push(note);
+  return parts.join('\n\n');
+}
+
+// Render kartu teks murni (gaya userbot zip: pure text, tanpa foto).
+// Coba editMessageText dulu (kalau pesan asal sudah teks, misal navigasi
+// antar menu teks). Kalau gagal (pesan asal masih FOTO dari /start, dan
+// Telegram nolak edit text->foto), fallback: hapus pesan foto, kirim
+// pesan teks baru.
+async function renderCard(ctx, html, replyMarkup) {
+  const opts = { parse_mode: "HTML", reply_markup: replyMarkup };
+  await ctx.editMessageText(html, opts).catch(async () => {
+    await ctx.deleteMessage().catch(() => {});
+    await ctx.reply(html, opts).catch(() => {});
+  });
 }
 
 // ─── CALLBACK QUERY DISPATCHER ──────────────────────────────────────────────
@@ -1116,12 +1160,29 @@ __action("back_main", async (query) => {
     ? `✅ Connected (${session.phoneNumber || '-'})`
     : "❌ Tidak Ada";
 
-  const menuMessage = `<blockquote>⪼  𝗜𝗡𝗙𝗢𝗥𝗠𝗔𝗧𝗜𝗢𝗡\n\n↯ Developer  : @maklowhh\n↯ Version    : 3.0\n↯ Language   : Javascript\n↯ Prefix     : /</blockquote>\n\n<blockquote>╭──────⧼   𝐁𝐎𝐓 𝐒𝐓𝐀𝐓𝐔𝐒   ⧽──────\n│↯ Sender Kamu : ${senderStatus}\n│↯ Runtime     : ${formatRuntime()}\n│↯ Memory      : ${formatMemory()}\n│↯ Restart In  : ${getNextRestartIn()}\n╰─────────────────────────</blockquote>\n\n<blockquote>↯ Pilih menu di bawah untuk mulai!</blockquote>`;
+  const cardText = buildCard({
+    title: '⪼ INFORMATION',
+    headers: ['Field', 'Value'],
+    rows: [
+      ['Developer', '@maklowhh'],
+      ['Version', '3.0'],
+      ['Language', 'Javascript'],
+      ['Prefix', '/'],
+    ],
+    note: buildCard({
+      title: '𝐁𝐎𝐓 𝐒𝐓𝐀𝐓𝐔𝐒',
+      headers: ['Field', 'Value'],
+      rows: [
+        ['Sender Kamu', senderStatus],
+        ['Runtime', formatRuntime()],
+        ['Memory', formatMemory()],
+        ['Restart In', getNextRestartIn()],
+      ],
+      note: '🎯 Pilih menu di bawah untuk mulai!',
+    }),
+  });
 
-  await ctx.editMessageCaption(menuMessage, {
-    parse_mode: "HTML",
-    reply_markup: mainMenuKeyboard(isOwner)
-  }).catch(() => {});
+  await renderCard(ctx, cardText, mainMenuKeyboard(isOwner));
 });
 
 // ─── Menu: Tes Function (pilih tipe) ─────────────
@@ -1132,20 +1193,23 @@ __action("menu_tesfunc", async (query) => {
   await bot.answerCallbackQuery(query.id).catch(() => {});
 
   await ctx.answerCbQuery("⚡ Tes Function").catch(() => {});
-  await ctx.editMessageCaption(
-    `<blockquote>⚡ <b>TES FUNCTION</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🎯 Pilih tipe pengiriman:\n\n🦠 <b>TesNomor</b> — kirim ke nomor WA target\n\n━━━━━━━━━━━━━━━━━━━━\n💡 Sender harus sudah terhubung!</blockquote>`,
-    {
-      parse_mode: "HTML",
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: "🦠 TesNomor", callback_data: "tesfunc_nomor", style: "danger" }
-          ],
-          [{ text: "🏠 Kembali ke Menu Utama", callback_data: "back_main", style: "primary" }]
-        ]
-      }
-    }
-  ).catch(() => {});
+  const cardText = buildCard({
+    title: '⚡ TES FUNCTION',
+    headers: ['Tipe', 'Keterangan'],
+    rows: [
+      ['TesNomor', 'Kirim ke nomor WA target'],
+    ],
+    note: '💡 Sender harus sudah terhubung!',
+  });
+  const replyMarkup = {
+    inline_keyboard: [
+      [
+        { text: "🦠 TesNomor", callback_data: "tesfunc_nomor", style: "danger" }
+      ],
+      [{ text: "🏠 Kembali ke Menu Utama", callback_data: "back_main", style: "primary" }]
+    ]
+  };
+  await renderCard(ctx, cardText, replyMarkup);
 });
 
 // ─── Menu: Tes Function → Ke Nomor ───────────────
@@ -1156,17 +1220,23 @@ __action("tesfunc_nomor", async (query) => {
   await bot.answerCallbackQuery(query.id).catch(() => {});
 
   await ctx.answerCbQuery("👾 Tes ke Nomor").catch(() => {});
-  await ctx.editMessageCaption(
-    `<blockquote>👾 <b>TES FUNCTION — KE NOMOR</b>\n━━━━━━━━━━━━━━━━━━━━\n\n📋 <b>Cara Pakai:</b>\n1️⃣ Kirim/reply file .js atau teks kode function\n2️⃣ Ketik perintah:\n   <code>/TesFunc 628xxx 10</code>\n   (sambil reply ke kode JS)\n\n📌 <b>Keterangan:</b>\n📞 <b>628xxx</b> = nomor target WhatsApp\n🔢 <b>10</b> = jumlah kiriman (max 1000)\n\n━━━━━━━━━━━━━━━━━━━━\n💡 Sender harus sudah terhubung!</blockquote>`,
-    {
-      parse_mode: "HTML",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "⬅️ Kembali", callback_data: "menu_tesfunc", style: "primary" }]
-        ]
-      }
-    }
-  ).catch(() => {});
+  const cardText = buildCard({
+    title: '👾 TES FUNCTION — KE NOMOR',
+    headers: ['Langkah', 'Detail'],
+    rows: [
+      ['1', 'Kirim/reply file .js atau teks kode function'],
+      ['2', '/TesFunc 628xxx 10 (reply ke kode JS)'],
+      ['628xxx', 'Nomor target WhatsApp'],
+      ['10', 'Jumlah kiriman (max 1000)'],
+    ],
+    note: '💡 Sender harus sudah terhubung!',
+  });
+  const replyMarkup = {
+    inline_keyboard: [
+      [{ text: "⬅️ Kembali", callback_data: "menu_tesfunc", style: "primary" }]
+    ]
+  };
+  await renderCard(ctx, cardText, replyMarkup);
 });
 
 // ─── Menu: Cek Error ──────────────────────────────
@@ -1177,10 +1247,16 @@ __action("menu_cekerror", async (query) => {
   await bot.answerCallbackQuery(query.id).catch(() => {});
 
   await ctx.answerCbQuery("🔍 Cek Error").catch(() => {});
-  await ctx.editMessageCaption(
-    `<blockquote>🔍 <b>CEK ERROR JS</b>\n━━━━━━━━━━━━━━━━━━━━\n\n📋 <b>Cara Pakai:</b>\n1️⃣ Reply ke pesan teks JS atau file .js\n2️⃣ Ketik perintah:\n   <code>/CekError</code>\n\n🔎 <b>Bot akan mengecek:</b>\n🔴 Syntax error\n📍 Baris error\n📄 Detail masalah\n\n━━━━━━━━━━━━━━━━━━━━\n💡 Gunakan /FixError untuk perbaiki otomatis!</blockquote>`,
-    { parse_mode: "HTML", reply_markup: backToMenuKeyboard() }
-  ).catch(() => {});
+  const cardText = buildCard({
+    title: '🔍 CEK ERROR JS',
+    headers: ['Langkah', 'Detail'],
+    rows: [
+      ['1', 'Reply ke pesan teks JS atau file .js'],
+      ['2', '/CekError'],
+    ],
+    note: '🔎 Bot akan mengecek: syntax error, baris error, detail masalah.\n💡 Gunakan /FixError untuk perbaiki otomatis!',
+  });
+  await renderCard(ctx, cardText, backToMenuKeyboard());
 });
 
 // ─── Menu: Fix Error ──────────────────────────────
@@ -1191,10 +1267,16 @@ __action("menu_fixerror", async (query) => {
   await bot.answerCallbackQuery(query.id).catch(() => {});
 
   await ctx.answerCbQuery("🛠️ Fix Error").catch(() => {});
-  await ctx.editMessageCaption(
-    `<blockquote>🛠️ <b>FIX ERROR JS</b>\n━━━━━━━━━━━━━━━━━━━━\n\n📋 <b>Cara Pakai:</b>\n1️⃣ Reply ke pesan teks JS atau file .js yang error\n2️⃣ Ketik perintah:\n   <code>/FixError</code>\n\n🤖 <b>Bot akan:</b>\n🔍 Deteksi jenis error\n✨ Auto-fix error otomatis\n📤 Kirim file .js yang sudah diperbaiki\n\n━━━━━━━━━━━━━━━━━━━━\n⚠️ Fix parsial mungkin terjadi jika error kompleks</blockquote>`,
-    { parse_mode: "HTML", reply_markup: backToMenuKeyboard() }
-  ).catch(() => {});
+  const cardText = buildCard({
+    title: '🛠️ FIX ERROR JS',
+    headers: ['Langkah', 'Detail'],
+    rows: [
+      ['1', 'Reply ke pesan teks JS atau file .js yang error'],
+      ['2', '/FixError'],
+    ],
+    note: '🤖 Bot akan: deteksi jenis error, auto-fix otomatis, kirim file .js yang sudah diperbaiki.\n⚠️ Fix parsial mungkin terjadi jika error kompleks',
+  });
+  await renderCard(ctx, cardText, backToMenuKeyboard());
 });
 
 // ─── Menu: Add Sender ─────────────────────────────
@@ -1205,10 +1287,17 @@ __action("menu_addsender", async (query) => {
   await bot.answerCallbackQuery(query.id).catch(() => {});
 
   await ctx.answerCbQuery("📱 Add Sender").catch(() => {});
-  await ctx.editMessageCaption(
-    `<blockquote>📱 <b>ADD SENDER WHATSAPP</b>\n━━━━━━━━━━━━━━━━━━━━\n\n📋 <b>Cara Pakai:</b>\nKetik perintah:\n   <code>/AddSender 62xxx</code>\n\n📌 <b>Langkah-langkah:</b>\n1️⃣ Ganti <b>62xxx</b> dengan nomor WA kamu\n2️⃣ Bot akan kirim Pairing Code\n3️⃣ Masukkan kode di WA kamu\n\n━━━━━━━━━━━━━━━━━━━━\n⚠️ Hanya 1 sender per akun!\n🗑️ Gunakan /ClearSender untuk hapus sender</blockquote>`,
-    { parse_mode: "HTML", reply_markup: backToMenuKeyboard() }
-  ).catch(() => {});
+  const cardText = buildCard({
+    title: '📱 ADD SENDER WHATSAPP',
+    headers: ['Langkah', 'Detail'],
+    rows: [
+      ['1', 'Ganti 62xxx dengan nomor WA kamu'],
+      ['2', 'Bot akan kirim Pairing Code'],
+      ['3', 'Masukkan kode di WA kamu'],
+    ],
+    note: '📋 Cara Pakai: /AddSender 62xxx\n⚠️ Hanya 1 sender per akun!\n🗑️ Gunakan /ClearSender untuk hapus sender',
+  });
+  await renderCard(ctx, cardText, backToMenuKeyboard());
 });
 
 // ─── Menu: Clear Sender ───────────────────────────
@@ -1223,25 +1312,26 @@ __action("menu_clearsender", async (query) => {
   const session = userSessions.get(userId);
 
   if (!session) {
-    await ctx.editMessageCaption(
-      `<blockquote>🗑️ <b>CLEAR SENDER</b>\n━━━━━━━━━━━━━━━━━━━━\n\n❌ Status: Kamu tidak punya sender aktif\n\n━━━━━━━━━━━━━━━━━━━━\n📱 Gunakan Add Sender untuk tambah sender</blockquote>`,
-      { parse_mode: "HTML", reply_markup: backToMenuKeyboard() }
-    ).catch(() => {});
+    const emptyCard = buildCard({
+      title: '🗑️ CLEAR SENDER',
+      note: '❌ Status: Kamu tidak punya sender aktif\n📱 Gunakan Add Sender untuk tambah sender',
+    });
+    await renderCard(ctx, emptyCard, backToMenuKeyboard());
     return;
   }
 
-  await ctx.editMessageCaption(
-    `<blockquote>🗑️ <b>CLEAR SENDER</b>\n━━━━━━━━━━━━━━━━━━━━\n\n📱 Sender Aktif : <b>${session.phoneNumber || '-'}</b>\n\n━━━━━━━━━━━━━━━━━━━━\n⚠️ Klik tombol konfirmasi untuk hapus sender</blockquote>`,
-    {
-      parse_mode: "HTML",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "⚠️ Konfirmasi Hapus Sender", callback_data: "confirm_clear", style: "danger" }],
-          [{ text: "🏠 Kembali ke Menu Utama", callback_data: "back_main", style: "primary" }]
-        ]
-      }
-    }
-  ).catch(() => {});
+  const cardText = buildCard({
+    title: '🗑️ CLEAR SENDER',
+    headers: ['Field', 'Value'],
+    rows: [['Sender Aktif', session.phoneNumber || '-']],
+    note: '⚠️ Klik tombol konfirmasi untuk hapus sender',
+  });
+  await renderCard(ctx, cardText, {
+    inline_keyboard: [
+      [{ text: "⚠️ Konfirmasi Hapus Sender", callback_data: "confirm_clear", style: "danger" }],
+      [{ text: "🏠 Kembali ke Menu Utama", callback_data: "back_main", style: "primary" }]
+    ]
+  });
 });
 
 __action("confirm_clear", async (query) => {
@@ -1255,10 +1345,7 @@ __action("confirm_clear", async (query) => {
   const session = userSessions.get(userId);
 
   if (!session) {
-    await ctx.editMessageCaption(
-      `<blockquote>🪧 Tidak ada sender aktif.</blockquote>`,
-      { parse_mode: "HTML", reply_markup: backToMenuKeyboard() }
-    ).catch(() => {});
+    await renderCard(ctx, buildCard({ note: '🪧 Tidak ada sender aktif.' }), backToMenuKeyboard());
     return;
   }
 
@@ -1266,16 +1353,14 @@ __action("confirm_clear", async (query) => {
     if (session.sock) { try { session.sock.end(); } catch (_) {} }
     userSessions.delete(userId);
     deleteSessionDir(userId);
-    await ctx.editMessageCaption(
-      `<blockquote>✅ <b>CLEAR SENDER BERHASIL</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🗑️ Sender berhasil dihapus!\n\n━━━━━━━━━━━━━━━━━━━━\n📱 Gunakan Add Sender untuk tambah sender baru</blockquote>`,
-      { parse_mode: "HTML", reply_markup: backToMenuKeyboard() }
-    ).catch(() => {});
+    const cardText = buildCard({
+      title: '✅ CLEAR SENDER BERHASIL',
+      note: '🗑️ Sender berhasil dihapus!\n📱 Gunakan Add Sender untuk tambah sender baru',
+    });
+    await renderCard(ctx, cardText, backToMenuKeyboard());
     logInfo('SESSION', `User ${userId} hapus sender via button`);
   } catch (err) {
-    await ctx.editMessageCaption(
-      `<blockquote>❌ Gagal hapus sender: ${err.message}</blockquote>`,
-      { parse_mode: "HTML", reply_markup: backToMenuKeyboard() }
-    ).catch(() => {});
+    await renderCard(ctx, buildCard({ note: `❌ Gagal hapus sender: ${err.message}` }), backToMenuKeyboard());
   }
 });
 
@@ -1295,10 +1380,20 @@ __action("menu_status", async (query) => {
   const totalSession = userSessions.size;
   const items = loadItems();
 
-  await ctx.editMessageCaption(
-    `<blockquote>📊 <b>STATUS BOT</b>\n━━━━━━━━━━━━━━━━━━━━\n📱 Sender Kamu  : ${senderStatus}\n⏱️ Runtime      : ${formatRuntime()}\n💾 Memory       : ${formatMemory()}\n🔄 Restart In   : ${getNextRestartIn()}\n👥 Total Sender : ${totalSession}\n🧑‍🤝‍🧑 Total Users  : ${botUsers.size}\n📦 Total Item   : ${items.length}\n━━━━━━━━━━━━━━━━━━━━</blockquote>`,
-    { parse_mode: "HTML", reply_markup: backToMenuKeyboard() }
-  ).catch(() => {});
+  const cardText = buildCard({
+    title: '📊 STATUS BOT',
+    headers: ['Field', 'Value'],
+    rows: [
+      ['Sender Kamu', senderStatus],
+      ['Runtime', formatRuntime()],
+      ['Memory', formatMemory()],
+      ['Restart In', getNextRestartIn()],
+      ['Total Sender', String(totalSession)],
+      ['Total Users', String(botUsers.size)],
+      ['Total Item', String(items.length)],
+    ],
+  });
+  await renderCard(ctx, cardText, backToMenuKeyboard());
 });
 
 // ─── Menu: All Fitur (Spin) ───────────────────────
@@ -1312,45 +1407,25 @@ __action("menu_allfitur", async (query) => {
   const items = loadItems();
   const totalItem = items.length;
 
-  await ctx.editMessageCaption(
-    `<blockquote>🎮 <b>ALL MENU — MAKLOWHH</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `┣ 📦 Total Item DB : <b>${totalItem} item</b>\n` +
-    `┣\n` +
-    `┣ 🎰 <b>SPIN</b>\n` +
-    `┣   Dapatkan file JS random dari DB!\n` +
-    `┣   Cmd: <code>/spin</code>\n` +
-    `┣\n` +
-    `┣ 🎨 <b>TO STICKER</b>\n` +
-    `┣   Ubah teks jadi stiker WA keren!\n` +
-    `┣   Cmd: <code>/tostc [teks kamu]</code>\n` +
-    `┣\n` +
-    `┣ 🔧 <b>FIX SCRIPT</b>\n` +
-    `┣   AI fix script otomatis max 15MB!\n` +
-    `┣   Cmd: <code>/FixBese</code> (reply ke file)\n` +
-    `┣\n` +
-    `┣ 🔄 <b>REPLACE TEXT</b>\n` +
-    `┣   Cari Ganti domain di script ganti teks di script tanpa ubah kode!\n` +
-    `┣   Cmd: <code>/rinemdomain</code> (reply ke file)\n` +
-    `┣\n` +
-    `┣ 🔍 <b>CEK SCRIPT</b>\n` +
-    `┣   Cek & analisa script JS kamu!\n` +
-    `┣   Cmd: <code>/CekScript</code> (reply ke file)\n` +
-    `┣\n` +
-    `┣ 🔮 <b>COMING SOON...</b>\n` +
-    `┣   Fitur baru sedang dalam\n` +
-    `┣   pengembangan. Stay tuned! ⚡\n` +
-    `┗━━━━━━━━━━━━━━━━━━━━━━━━</blockquote>`,
-    {
-      parse_mode: "HTML",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "🔮 Coming Soon", callback_data: "info_comingsoon", style: "primary" }],
-          [{ text: "🏠 Kembali ke Menu Utama", callback_data: "back_main", style: "primary" }]
-        ]
-      }
-    }
-  ).catch(() => {});
+  const cardText = buildCard({
+    title: '🎮 ALL MENU — MAKLOWHH',
+    headers: ['Fitur', 'Keterangan'],
+    rows: [
+      ['🎰 SPIN', 'Dapatkan file JS random — /spin'],
+      ['🎨 TO STICKER', 'Ubah teks jadi stiker WA — /tostc [teks]'],
+      ['🔧 FIX SCRIPT', 'AI fix script max 15MB — /FixBese (reply file)'],
+      ['🔄 REPLACE TEXT', 'Ganti domain/teks di script — /rinemdomain (reply file)'],
+      ['🔍 CEK SCRIPT', 'Cek & analisa script JS — /CekScript (reply file)'],
+      ['🔮 COMING SOON', 'Fitur baru dalam pengembangan'],
+    ],
+    note: `📦 Total Item DB: ${totalItem} item`,
+  });
+  await renderCard(ctx, cardText, {
+    inline_keyboard: [
+      [{ text: "🔮 Coming Soon", callback_data: "info_comingsoon", style: "primary" }],
+      [{ text: "🏠 Kembali ke Menu Utama", callback_data: "back_main", style: "primary" }]
+    ]
+  });
 });
 
 // ─── Callback: info tostc ─────────────────────────
@@ -1361,31 +1436,21 @@ __action("info_tostc", async (query) => {
   await bot.answerCallbackQuery(query.id).catch(() => {});
 
   await ctx.answerCbQuery("🎨 To Sticker").catch(() => {});
-  await ctx.editMessageCaption(
-    `<blockquote>🎨 <b>TO STICKER</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `┣ Ubah teks apapun menjadi\n` +
-    `┣ stiker WhatsApp yang keren!\n` +
-    `┣\n` +
-    `┣ 📋 <b>Cara Pakai:</b>\n` +
-    `┣   <code>/tostc [teks kamu]</code>\n` +
-    `┣\n` +
-    `┣ 📌 <b>Contoh:</b>\n` +
-    `┣   <code>/tostc rp1st</code>\n` +
-    `┣   <code>/tostc Hello World!</code>\n` +
-    `┣\n` +
-    `┣ ⚠️ <b>Syarat:</b>\n` +
-    `┣   • Sender harus terhubung\n` +
-    `┗   • Teks max 50 karakter</blockquote>`,
-    {
-      parse_mode: "HTML",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "🔙 Kembali ke All Fitur", callback_data: "menu_allfitur", style: "primary" }]
-        ]
-      }
-    }
-  ).catch(() => {});
+  const cardText = buildCard({
+    title: '🎨 TO STICKER',
+    subtitle: 'Ubah teks apapun menjadi stiker WhatsApp yang keren!',
+    headers: ['Contoh', 'Perintah'],
+    rows: [
+      ['Dasar', '/tostc rp1st'],
+      ['Teks biasa', '/tostc Hello World!'],
+    ],
+    note: '📋 Cara Pakai: /tostc [teks kamu]\n⚠️ Syarat: sender harus terhubung, teks max 50 karakter',
+  });
+  await renderCard(ctx, cardText, {
+    inline_keyboard: [
+      [{ text: "🔙 Kembali ke All Fitur", callback_data: "menu_allfitur", style: "primary" }]
+    ]
+  });
 });
 
 // ─── Callback: coming soon ────────────────────────
@@ -1396,29 +1461,22 @@ __action("info_comingsoon", async (query) => {
   await bot.answerCallbackQuery(query.id).catch(() => {});
 
   await ctx.answerCbQuery("🔮 Coming Soon...").catch(() => {});
-  await ctx.editMessageCaption(
-    `<blockquote>🔮 <b>COMING SOON</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `┣ Fitur-fitur baru sedang dalam\n` +
-    `┣ pengembangan oleh tim MAKLOWHH!\n` +
-    `┣\n` +
-    `┣ 🚧 <b>Yang akan datang:</b>\n` +
-    `┣   ▸ Foto live — <i>Segera hadir</i>\n` +
-    `┣   ▸ tiktok downloader — <i>Segera hadir</i>\n` +
-    `┣   ▸ cari musik — <i>Segera hadir</i>\n` +
-    `┣\n` +
-    `┣ 💬 Punya saran fitur?\n` +
-    `┣   Hubungi owner langsung!\n` +
-    `┗   ⚡ Stay tuned MAKLOWHH!</blockquote>`,
-    {
-      parse_mode: "HTML",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "• Kembali ke All Fitur", callback_data: "menu_allfitur", style: "primary" }]
-        ]
-      }
-    }
-  ).catch(() => {});
+  const cardText = buildCard({
+    title: '🔮 COMING SOON',
+    subtitle: 'Fitur-fitur baru sedang dalam pengembangan oleh tim MAKLOWHH!',
+    headers: ['Fitur', 'Status'],
+    rows: [
+      ['Foto live', 'Segera hadir'],
+      ['Tiktok downloader', 'Segera hadir'],
+      ['Cari musik', 'Segera hadir'],
+    ],
+    note: '💬 Punya saran fitur? Hubungi owner langsung!\n⚡ Stay tuned MAKLOWHH!',
+  });
+  await renderCard(ctx, cardText, {
+    inline_keyboard: [
+      [{ text: "• Kembali ke All Fitur", callback_data: "menu_allfitur", style: "primary" }]
+    ]
+  });
 });
 
 
@@ -1432,31 +1490,23 @@ __action("menu_fixscript", async (query) => {
   await bot.answerCallbackQuery(query.id).catch(() => {});
 
   await ctx.answerCbQuery("🔧 Fix Script").catch(() => {});
-  await ctx.editMessageCaption(
-    "<blockquote>🔧 <b>FIX SCRIPT — AI POWERED</b>\n" +
-    "━━━━━━━━━━━━━━━━━━━━\n" +
-    "┣\n" +
-    "┣ 🤖 AI akan memeriksa & memperbaiki\n" +
-    "┣    script kamu secara menyeluruh!\n" +
-    "┣\n" +
-    "┣ 📋 <b>Cara Pakai:</b>\n" +
-    "┣   1️⃣ Reply ke file script (.js)\n" +
-    "┣   2️⃣ Ketik: <code>/FixBese</code>\n" +
-    "┣\n" +
-    "┣ ✅ <b>Yang dicek AI:</b>\n" +
-    "┣   🔴 Syntax error\n" +
-    "┣   🟠 Logic error\n" +
-    "┣   🟡 Missing variable/function\n" +
-    "┣   🔵 Struktur kode bermasalah\n" +
-    "┣\n" +
-    "┣ 📦 <b>Batas file: 15 MB</b>\n" +
-    "┗━━━━━━━━━━━━━━━━━━━━━━━━</blockquote>",
-    { parse_mode: "HTML", reply_markup: {
-      inline_keyboard: [
-        [{ text: "🔙 Kembali ke All Menu", callback_data: "menu_allfitur", style: "primary" }]
-      ]
-    }}
-  ).catch(() => {});
+  const cardText = buildCard({
+    title: '🔧 FIX SCRIPT — AI POWERED',
+    subtitle: '🤖 AI akan memeriksa & memperbaiki script kamu secara menyeluruh!',
+    headers: ['Yang dicek AI', ''],
+    rows: [
+      ['🔴 Syntax error', ''],
+      ['🟠 Logic error', ''],
+      ['🟡 Missing variable/function', ''],
+      ['🔵 Struktur kode bermasalah', ''],
+    ],
+    note: '📋 Cara Pakai: reply ke file script (.js), lalu ketik /FixBese\n📦 Batas file: 15 MB',
+  });
+  await renderCard(ctx, cardText, {
+    inline_keyboard: [
+      [{ text: "🔙 Kembali ke All Menu", callback_data: "menu_allfitur", style: "primary" }]
+    ]
+  });
 });
 
 // ─── Callback: Do Spin ────────────────────────────
@@ -1539,10 +1589,19 @@ __action("admin_panel", async (query) => {
     return ctx.answerCbQuery("❌ Bukan owner!", { show_alert: true }).catch(() => {});
   }
   const items = loadItems();
-  await ctx.editMessageCaption(
-    `<blockquote>👑 <b>ADMIN PANEL</b>\n━━━━━━━━━━━━━━━━━━━━\n👨‍💻 Owner       : @\n🧑‍🤝‍🧑 Total Users : ${botUsers.size}\n📱 Total Sender: ${userSessions.size}\n📦 Total Item  : ${items.length}\n⏱️ Runtime     : ${formatRuntime()}\n💾 Memory      : ${formatMemory()}\n━━━━━━━━━━━━━━━━━━━━\n🎯 Pilih aksi di bawah:</blockquote>`,
-    { parse_mode: "HTML", reply_markup: adminPanelKeyboard() }
-  ).catch(() => {});
+  const cardText = buildCard({
+    title: '👑 ADMIN PANEL',
+    headers: ['Field', 'Value'],
+    rows: [
+      ['Total Users', String(botUsers.size)],
+      ['Total Sender', String(userSessions.size)],
+      ['Total Item', String(items.length)],
+      ['Runtime', formatRuntime()],
+      ['Memory', formatMemory()],
+    ],
+    note: '🎯 Pilih aksi di bawah:',
+  });
+  await renderCard(ctx, cardText, adminPanelKeyboard());
 });
 
 // ─── Admin: Maintenance Mode ─────────────────────────
@@ -1595,25 +1654,18 @@ __action("admin_maintenance", async (query) => {
 ` +
       `🤖 System by MAKLOWHH`;
     await broadcastToAllUsers(msgOn);
-    await ctx.editMessageCaption(
-      `<blockquote>🔴 <b>MAINTENANCE MODE AKTIF</b>
-
-` +
-      `━━━━━━━━━━━━━━━━━━━━
-` +
-      `┣ 🛠️ Status  : <b>🔴 ON — Bot dikunci</b>
-` +
-      `┣ 👥 User    : <b>Tidak bisa akses bot</b>
-` +
-      `┣ 👑 Owner   : <b>Tetap bisa akses</b>
-` +
-      `┗ 📌 Alasan : <b>${maintenanceReason}</b>
-` +
-      `━━━━━━━━━━━━━━━━━━━━
-` +
-      `💡 Tekan tombol lagi untuk nonaktifkan.</blockquote>`,
-      { parse_mode: 'HTML', reply_markup: adminPanelKeyboard() }
-    ).catch(() => {});
+    const cardText = buildCard({
+      title: '🔴 MAINTENANCE MODE AKTIF',
+      headers: ['Field', 'Value'],
+      rows: [
+        ['Status', '🔴 ON — Bot dikunci'],
+        ['User', 'Tidak bisa akses bot'],
+        ['Owner', 'Tetap bisa akses'],
+        ['Alasan', maintenanceReason],
+      ],
+      note: '💡 Tekan tombol lagi untuk nonaktifkan.',
+    });
+    await renderCard(ctx, cardText, adminPanelKeyboard());
   } else {
     maintenanceMode = false;
     maintenanceReason = '';
@@ -1633,23 +1685,17 @@ __action("admin_maintenance", async (query) => {
 ` +
       `🤖 System by MAKLOWHH`;
     await broadcastToAllUsers(msgOff);
-    await ctx.editMessageCaption(
-      `<blockquote>🟢 <b>MAINTENANCE MODE NONAKTIF</b>
-
-` +
-      `━━━━━━━━━━━━━━━━━━━━
-` +
-      `┣ ✅ Status  : <b>🟢 OFF — Bot normal kembali</b>
-` +
-      `┣ 👥 User    : <b>Bisa akses bot</b>
-` +
-      `┗ 🕐 Waktu  : <b>${moment().tz('Asia/Jakarta').format('DD/MM/YYYY HH:mm:ss')}</b>
-` +
-      `━━━━━━━━━━━━━━━━━━━━
-` +
-      `💡 Bot sudah kembali online!</blockquote>`,
-      { parse_mode: 'HTML', reply_markup: adminPanelKeyboard() }
-    ).catch(() => {});
+    const cardText = buildCard({
+      title: '🟢 MAINTENANCE MODE NONAKTIF',
+      headers: ['Field', 'Value'],
+      rows: [
+        ['Status', '🟢 OFF — Bot normal kembali'],
+        ['User', 'Bisa akses bot'],
+        ['Waktu', moment().tz('Asia/Jakarta').format('DD/MM/YYYY HH:mm:ss')],
+      ],
+      note: '💡 Bot sudah kembali online!',
+    });
+    await renderCard(ctx, cardText, adminPanelKeyboard());
   }
 });
 
@@ -1665,10 +1711,18 @@ __action("admin_userstats", async (query) => {
     return ctx.answerCbQuery("❌ Bukan owner!", { show_alert: true }).catch(() => {});
   }
   const activeSessions = [...userSessions.entries()].filter(([, s]) => s.isConnected).length;
-  await ctx.editMessageCaption(
-    `<blockquote>👥 <b>USER STATISTICS</b>\n━━━━━━━━━━━━━━━━━━━━\n🧑‍🤝‍🧑 Total Users Terdaftar : <b>${botUsers.size}</b>\n✅ Total Sender Aktif    : <b>${activeSessions}</b>\n🔗 Total Session Loaded  : <b>${userSessions.size}</b>\n⏱️ Uptime Bot            : <b>${formatRuntime()}</b>\n💾 Memory Usage          : <b>${formatMemory()}</b>\n━━━━━━━━━━━━━━━━━━━━</blockquote>`,
-    { parse_mode: "HTML", reply_markup: adminPanelKeyboard() }
-  ).catch(() => {});
+  const cardText = buildCard({
+    title: '👥 USER STATISTICS',
+    headers: ['Field', 'Value'],
+    rows: [
+      ['Total Users Terdaftar', String(botUsers.size)],
+      ['Total Sender Aktif', String(activeSessions)],
+      ['Total Session Loaded', String(userSessions.size)],
+      ['Uptime Bot', formatRuntime()],
+      ['Memory Usage', formatMemory()],
+    ],
+  });
+  await renderCard(ctx, cardText, adminPanelKeyboard());
 });
 
 // ─── Admin: Bot Status ────────────────────────────
@@ -1683,10 +1737,21 @@ __action("admin_botstatus", async (query) => {
     return ctx.answerCbQuery("❌ Bukan owner!", { show_alert: true }).catch(() => {});
   }
   const items = loadItems();
-  await ctx.editMessageCaption(
-    `<blockquote>📡 <b>BOT STATUS DETAIL</b>\n━━━━━━━━━━━━━━━━━━━━\n⏱️ Runtime        : <b>${formatRuntime()}</b>\n💾 Memory         : <b>${formatMemory()}</b>\n🔄 Next Restart   : <b>${getNextRestartIn()}</b>\n🖥️ Platform       : <b>${os.platform()} ${os.arch()}</b>\n🟢 Node.js        : <b>${process.version}</b>\n👥 Total Users    : <b>${botUsers.size}</b>\n📱 Active Sessions: <b>${userSessions.size}</b>\n📦 Total Item DB  : <b>${items.length}</b>\n━━━━━━━━━━━━━━━━━━━━</blockquote>`,
-    { parse_mode: "HTML", reply_markup: adminPanelKeyboard() }
-  ).catch(() => {});
+  const cardText = buildCard({
+    title: '📡 BOT STATUS DETAIL',
+    headers: ['Field', 'Value'],
+    rows: [
+      ['Runtime', formatRuntime()],
+      ['Memory', formatMemory()],
+      ['Next Restart', getNextRestartIn()],
+      ['Platform', `${os.platform()} ${os.arch()}`],
+      ['Node.js', process.version],
+      ['Total Users', String(botUsers.size)],
+      ['Active Sessions', String(userSessions.size)],
+      ['Total Item DB', String(items.length)],
+    ],
+  });
+  await renderCard(ctx, cardText, adminPanelKeyboard());
 });
 
 // ─── Admin: List Item ─────────────────────────────
@@ -1702,16 +1767,19 @@ __action("admin_listitem", async (query) => {
   }
   const items = loadItems();
   if (items.length === 0) {
-    return ctx.editMessageCaption(
-      `<blockquote>📋 <b>LIST ITEM SPIN</b>\n━━━━━━━━━━━━━━━━━━━━\n\n📭 Database masih kosong!\n\n━━━━━━━━━━━━━━━━━━━━\n💡 Gunakan /additem untuk tambah item.</blockquote>`,
-      { parse_mode: "HTML", reply_markup: adminPanelKeyboard() }
-    ).catch(() => {});
+    const emptyCard = buildCard({
+      title: '📋 LIST ITEM SPIN',
+      note: '📭 Database masih kosong!\n💡 Gunakan /additem untuk tambah item.',
+    });
+    return renderCard(ctx, emptyCard, adminPanelKeyboard());
   }
-  const list = items.map((it, i) => `↯ ${i + 1}. <b>${it.name}</b>`).join('\n');
-  await ctx.editMessageCaption(
-    `<blockquote>📋 <b>LIST ITEM SPIN</b>\n\n${list}\n\n↯ Total: ${items.length} item</blockquote>`,
-    { parse_mode: "HTML", reply_markup: adminPanelKeyboard() }
-  ).catch(() => {});
+  const cardText = buildCard({
+    title: '📋 LIST ITEM SPIN',
+    headers: ['No', 'Nama Item'],
+    rows: items.map((it, i) => [String(i + 1), it.name]),
+    note: `Total: ${items.length} item`,
+  });
+  await renderCard(ctx, cardText, adminPanelKeyboard());
 });
 
 // ─── Admin: Add Item via Button ───────────────────
@@ -1726,15 +1794,13 @@ __action("admin_additem", async (query) => {
     return ctx.answerCbQuery("❌ Bukan owner!", { show_alert: true }).catch(() => {});
   }
   pendingAddItem.set(String(ctx.from.id), { step: 'waiting', items: [] });
-  await ctx.editMessageCaption(
-    `<blockquote>📦 <b>ADD ITEM SPIN</b>\n\n↯ Sekarang kirim semua file .js item yang ingin ditambahkan ke database.\n↯ Kirim satu per satu atau langsung banyak.\n↯ Ketik /done jika sudah selesai.\n↯ Ketik /cancel untuk batal.\n\n⚠️ Nama file = nama item di database!</blockquote>`,
-    {
-      parse_mode: "HTML",
-      reply_markup: {
-        inline_keyboard: [[{ text: "• Batalkan", callback_data: "bc_cancel", style: "danger" }]]
-      }
-    }
-  ).catch(() => {});
+  const cardText = buildCard({
+    title: '📦 ADD ITEM SPIN',
+    note: 'Sekarang kirim semua file .js item yang ingin ditambahkan ke database.\nKirim satu per satu atau langsung banyak.\nKetik /done jika sudah selesai.\nKetik /cancel untuk batal.\n\n⚠️ Nama file = nama item di database!',
+  });
+  await renderCard(ctx, cardText, {
+    inline_keyboard: [[{ text: "• Batalkan", callback_data: "bc_cancel", style: "danger" }]]
+  });
 });
 
 // ─── Admin: Broadcast Teks ────────────────────────
@@ -1749,13 +1815,13 @@ __action("bc_text", async (query) => {
     return ctx.answerCbQuery("❌ Bukan owner!", { show_alert: true }).catch(() => {});
   }
   pendingBroadcast.set(String(ctx.from.id), { type: "text", chatId: ctx.chat.id });
-  await ctx.editMessageCaption(
-    `<blockquote>📢 <b>BROADCAST TEKS</b>\n\n↯ Sekarang kirim pesan teks yang ingin di-broadcast ke semua user.\n↯ Total target: <b>${botUsers.size} user</b>\n\n⚠️ Ketik /cancel untuk batal</blockquote>`,
-    {
-      parse_mode: "HTML",
-      reply_markup: { inline_keyboard: [[{ text: "• Batalkan Broadcast", callback_data: "bc_cancel", style: "danger" }]] }
-    }
-  ).catch(() => {});
+  const cardText = buildCard({
+    title: '📢 BROADCAST TEKS',
+    note: `Sekarang kirim pesan teks yang ingin di-broadcast ke semua user.\nTotal target: ${botUsers.size} user\n\n⚠️ Ketik /cancel untuk batal`,
+  });
+  await renderCard(ctx, cardText, {
+    inline_keyboard: [[{ text: "• Batalkan Broadcast", callback_data: "bc_cancel", style: "danger" }]]
+  });
 });
 
 // ─── Admin: Broadcast Foto ────────────────────────
@@ -1770,13 +1836,13 @@ __action("bc_photo", async (query) => {
     return ctx.answerCbQuery("❌ Bukan owner!", { show_alert: true }).catch(() => {});
   }
   pendingBroadcast.set(String(ctx.from.id), { type: "photo", chatId: ctx.chat.id });
-  await ctx.editMessageCaption(
-    `<blockquote>🖼️ <b>BROADCAST FOTO</b>\n\n↯ Sekarang kirim foto (dengan caption jika perlu).\n↯ Total target: <b>${botUsers.size} user</b>\n\n⚠️ Ketik /cancel untuk batal</blockquote>`,
-    {
-      parse_mode: "HTML",
-      reply_markup: { inline_keyboard: [[{ text: "• Batalkan Broadcast", callback_data: "bc_cancel", style: "danger" }]] }
-    }
-  ).catch(() => {});
+  const cardText = buildCard({
+    title: '🖼️ BROADCAST FOTO',
+    note: `Sekarang kirim foto (dengan caption jika perlu).\nTotal target: ${botUsers.size} user\n\n⚠️ Ketik /cancel untuk batal`,
+  });
+  await renderCard(ctx, cardText, {
+    inline_keyboard: [[{ text: "• Batalkan Broadcast", callback_data: "bc_cancel", style: "danger" }]]
+  });
 });
 
 // ─── Admin: Cancel ────────────────────────────────
@@ -2244,13 +2310,17 @@ __action(/^pair_confirm_/, async (query) => {
     const isConnected = session.sock?.user || session.isConnected;
 
     if (isConnected) {
-      await ctx.editMessageCaption(`<blockquote><b>✅ PAIRING BERHASIL!</b>
-
-Nomor: <code>${session.phoneNumber}</code>
-Status: 🟢 Connected
-Waktu: ${new Date().toLocaleTimeString('id-ID')}
-
-Sender siap digunakan! 🎉</blockquote>`, {
+      const cardText = buildCard({
+        title: '✅ PAIRING BERHASIL!',
+        headers: ['Field', 'Value'],
+        rows: [
+          ['Nomor', session.phoneNumber],
+          ['Status', '🟢 Connected'],
+          ['Waktu', new Date().toLocaleTimeString('id-ID')],
+        ],
+        note: 'Sender siap digunakan! 🎉',
+      });
+      await ctx.editMessageCaption(cardText, {
         parse_mode: 'HTML',
         reply_markup: { inline_keyboard: [[{ text: '✅ Tutup', callback_data: 'close' }]] }
       }).catch(() => {});
@@ -2281,11 +2351,11 @@ __action(/^pair_cancel_/, async (query) => {
 
   userSessions.delete(userId);
 
-  await ctx.editMessageCaption(`<blockquote><b>❌ PAIRING DIBATALKAN</b>
-
-Silakan coba lagi dengan /AddSender</blockquote>`, {
-    parse_mode: 'HTML'
-  }).catch(() => {});
+  const cancelCard = buildCard({
+    title: '❌ PAIRING DIBATALKAN',
+    note: 'Silakan coba lagi dengan /AddSender',
+  });
+  await ctx.editMessageCaption(cancelCard, { parse_mode: 'HTML' }).catch(() => {});
 
   await ctx.answerCbQuery('Pairing dibatalkan', { show_alert: false });
 });
@@ -3848,12 +3918,10 @@ __action(/^bc_cancel(_\d+)?$/, async (query) => {
       pendingBroadcast.delete(String(ctx.from.id));
       pendingAddItem.delete(String(ctx.from.id));
       try {
-        await ctx.editMessageCaption(
-          `<blockquote>❌ <b>DIBATALKAN</b>\n\n↯ Aksi berhasil dibatalkan.</blockquote>`,
-          { parse_mode: "HTML", reply_markup: adminPanelKeyboard() }
-        );
+        const cardText = buildCard({ title: '❌ DIBATALKAN', note: 'Aksi berhasil dibatalkan.' });
+        await renderCard(ctx, cardText, adminPanelKeyboard());
       } catch (e) {
-        console.log("Edit caption error:", e.message);
+        console.log("Edit cancel message error:", e.message);
       }
     }
   } catch (err) {
