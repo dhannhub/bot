@@ -1,5 +1,5 @@
 /**
- * panel.js — Admin Panesl untuk wa-api (Comic 3D Edition)
+ * panel.js — Admin Panel untuk wa-api (Comic 3D Edition)
  * Jalan di port 2579, akses via /panel
  * Auth: session-based + bcrypt
  */
@@ -759,9 +759,9 @@ app.get('/panel/dashboard', auth, async (req, res) => {
     let apiStatus = 'Belum diketahui', cls = 'alert-warn', icon = 'alert'
     try {
         const axios = require('axios')
-        const r = await axios.get('http://localhost:2578/api/status', { timeout: 3000 })
+        const r = await axios.get('http://localhost:2578/api/status', { timeout: 3000, headers: { 'x-api-key': (activeKeys[0] && activeKeys[0].key) || '' } })
         if (r.data?.success) { apiStatus = `Online — uptime ${r.data.uptime_sec}s, mem ${r.data.memory_mb}MB`; cls = 'alert-success'; icon = 'check' }
-    } catch { apiStatus = 'Offline atau tidak bisa dihubungi'; cls = 'alert-danger'; icon = 'boom' }
+    } catch (e) { apiStatus = e.response ? `wa-api membalas HTTP ${e.response.status}. Cek API key aktif dan rute /api/status` : 'Offline atau tidak bisa dihubungi'; cls = 'alert-danger'; icon = 'boom' }
 
     const stat = (v, l, c, i) => `<div class="stat tilt c-${c}">${ic(i, 28)}<div class="stat-val" data-n="${v}">${v}</div><div class="stat-label">${l}</div></div>`
     const body = `
