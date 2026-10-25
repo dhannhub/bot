@@ -1,7 +1,7 @@
 /**
  * panel.js — Admin Panel untuk wa-api (Comic 3D Edition)
  * Jalan di port 2579, akses via /panel
- * Auth: session-based + bcrypts
+ * Auth: session-based + bcrypt
  */
 
 const express  = require('express')
