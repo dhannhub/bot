@@ -1,7 +1,7 @@
 /**
  * panel.js — Admin Panel untuk wa-api
  * ─────────────────────────────────────
- * Jalan di port 2579, akses via /panel
+ * Jalan di port 2579, akses via /panels
  * Auth: session-based + bcrypt
  */
 
@@ -238,13 +238,11 @@ tr:hover td{background:rgba(255,255,255,.02)}
   .content{padding:14px}
   .form-row{flex-direction:column}
   .stats{grid-template-columns:repeat(2,1fr)}
-  .sidebar-overlay{display:block!important}
 }
-.sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99}
+
 </style>
 </head>
 <body>
-<div class="sidebar-overlay" id="ov" onclick="closeSidebar()"></div>
 <div class="wrap">
   <nav class="sidebar" id="sidebar">
     <div class="sidebar-logo">
@@ -294,8 +292,8 @@ tr:hover td{background:rgba(255,255,255,.02)}
   </div>
 </div>
 <script>
-function toggleSidebar(){document.getElementById('sidebar').classList.toggle('open');document.getElementById('ov').style.display=document.getElementById('sidebar').classList.contains('open')?'block':'none'}
-function closeSidebar(){document.getElementById('sidebar').classList.remove('open');document.getElementById('ov').style.display='none'}
+function toggleSidebar(){document.getElementById('sidebar').classList.toggle('open')}
+function closeSidebar(){document.getElementById('sidebar').classList.remove('open')}
 function openModal(title,sub,action){document.getElementById('modal-title').textContent=title;document.getElementById('modal-sub').textContent=sub;document.getElementById('modal').classList.add('open');document.getElementById('modal-ok').onclick=()=>{closeModal();action()}}
 function closeModal(){document.getElementById('modal').classList.remove('open')}
 function copyText(t){navigator.clipboard.writeText(t).then(()=>{const b=event.target;const o=b.textContent;b.textContent='✅';setTimeout(()=>b.textContent=o,1500)})}
