@@ -2,7 +2,7 @@
  * panel.js — Admin Panel untuk wa-api (Comic 3D Edition)
  * Jalan di port 2579, akses via /panel
  * Auth: session-based + bcrypt
- * By Dhann Anjay
+ * By Dhann Anjay Bjir
  */
 
 const express  = require('express')
@@ -39,8 +39,8 @@ function saveData(data) { fs.writeFileSync(DATA_FILE, JSON.stringify(data, null,
 
 async function initData() {
     const data = loadData()
-    if (!data.username) data.username = 'admindhann'
-    if (!data.password) data.password = await bcrypt.hash('dhann123123*', 12)
+    if (!data.username) data.username = process.env.PANEL_USER || 'admindhann'
+    if (!data.password) data.password = await bcrypt.hash(process.env.PANEL_PASS || 'dhann123123*', 12)
     if (!data.apiKeys)  data.apiKeys  = []
     if (!data.maint)    data.maint    = { api: false, web: false, msg: '' }
     if (!data.backups)  data.backups  = []
@@ -50,7 +50,9 @@ async function initData() {
         data.users = [{ username: data.username, password: data.password, role: 'owner', ui: { ...UI_DEFAULT, ...(data.ui || {}) }, created: new Date().toISOString() }]
     }
     data.users.forEach(u => { if (u.role === 'viewer') u.role = 'visitor' })
-    if (!data.anim || !data.anim.v) data.anim = { style: 'burst', v: 2 }
+    if (!data.anim || !data.anim.v || data.anim.v < 3) data.anim = { style: 'koran', v: 3 }
+    if (!data.shield) data.shield = { on: true }
+    if (!data.reg)    data.reg    = { open: true }
     if (!data.visitor) data.visitor = { functions: true, status: true }
     saveData(data)
     return data
@@ -65,6 +67,7 @@ const THEMES = ['auto', 'light', 'dark']
 
 // gaya transisi halaman (global, hanya Owner yang bisa mengganti)
 const ANIM_STYLES = {
+    koran:   ['Koran Gunting',      'Koran terbit dengan berita UI baru, digunting pakai gunting, lalu di-zoom jadi UI barunya. Berlaku juga untuk login dan register.', ['Koran', 'Gunting', 'Zoom']],
     gunshot: ['Tembak Pistol',     'Pistol vektor meluncur dari samping, membidik tombol yang kamu tekan, lalu DOR! Seluruh UI langsung pecah dan diganti UI baru.', ['Pistol', 'Tembakan', 'Kilat', 'Selongsong']],
     burst:   ['Ledakan Berpencar', 'Semua elemen meledak ke segala arah dari titik klik, lalu halaman baru menyusun diri sambil memantul.', ['3D', 'Bintang', 'Boom']],
     slam:    ['Jatuh Berantakan',  'Elemen bergetar lalu rontok satu per satu sambil berputar. Yang baru terjun dari atas dan memantul.', ['Gravitasi', 'Pantul', 'Getar']],
@@ -75,7 +78,121 @@ const ANIM_STYLES = {
     pop:     ['Pop Balon',         'Tiap elemen menggembung lalu pecah bersuara pop. Yang baru membal keluar.', ['Balon', 'Pop']],
     none:    ['Tanpa Transisi',    'Pindah halaman langsung tanpa animasi keluar-masuk.', ['Instan']],
 }
-const getAnim = () => { const a = (loadData().anim || {}).style; return ANIM_STYLES[a] ? a : 'burst' }
+const getAnim = () => { const a = (loadData().anim || {}).style; return ANIM_STYLES[a] ? a : 'koran' }
+
+// ── Opsional: obfuscate JS sisi-browser (npm i javascript-obfuscator) ─────────
+// Kalau modulnya tidak ada, panel tetap jalan normal (JS dikirim apa adanya).
+// Matikan manual dengan env OBFUSCATE=0
+let JSO = null
+if (process.env.OBFUSCATE !== '0') { try { JSO = require('javascript-obfuscator') } catch {} }
+const OB = (() => {
+    const cache = new Map()
+    return src => {
+        if (!JSO) return src
+        if (cache.has(src)) return cache.get(src)
+        let out = src
+        try {
+            out = JSO.obfuscate(src, {
+                compact: true, simplify: true, stringArray: true, stringArrayThreshold: 0.8,
+                stringArrayEncoding: ['base64'], rotateStringArray: true, shuffleStringArray: true,
+                identifierNamesGenerator: 'hexadecimal', renameGlobals: false,
+                controlFlowFlattening: false, deadCodeInjection: false, selfDefending: false,
+                debugProtection: false, target: 'browser'
+            }).getObfuscatedCode()
+        } catch (e) { console.error('[PANEL] obfuscate gagal, pakai kode asli:', e.message) }
+        cache.set(src, out)
+        return out
+    }
+})()
+
+// ── Kontak (tombol Contact Us) ────────────────────────────────────────────────
+const CONTACT = {
+    waNumber:  '6282126803897',
+    waShown:   '+62 821-2680-3897',
+    waChannel: 'https://whatsapp.com/channel/0029VbCuWBx1iUxReAboHY1f',
+    tgLink:    'https://t.me/rp1st',
+    tgShown:   't.me/rp1st',
+}
+
+// ── Pengaturan keamanan (diatur Owner di Setelan) ─────────────────────────────
+const shieldOn = () => (loadData().shield || {}).on !== false
+const regOpen  = d => ((d || loadData()).reg || {}).open !== false
+const SCRAPER_UA = /curl|wget|httrack|python-requests|python-urllib|aiohttp|httpx|go-http-client|libwww|scrapy|node-fetch|axios|okhttp|postman|insomnia|httpie|webcopier|offline explorer|sitesucker|webzip|teleport|phantomjs/i
+const shieldTag = () => {
+    const u = curUser()
+    return shieldOn() && !(u && u.role === 'owner') ? `<script>${OB(SHIELD_JS)}</script>` : ''
+}
+
+// ── Captcha gambar tanpa layanan luar ─────────────────────────────────────────
+// Stateless: token = nonce.exp.signature (HMAC). Jawaban diturunkan dari HMAC juga,
+// jadi tidak perlu simpan apa pun di session. Setiap token cuma bisa dipakai sekali.
+const CAP_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
+const capHm  = (k, s) => crypto.createHmac('sha256', SESSION_SECRET).update(k + ':' + s).digest()
+const capB64 = b => Buffer.from(b).toString('base64url')
+const capUsed = new Map()
+setInterval(() => { const n = Date.now(); for (const [k, e] of capUsed) if (e < n) capUsed.delete(k) }, 60000).unref()
+
+function capNew() {
+    const p = crypto.randomBytes(9).toString('base64url') + '.' + (Date.now() + 5 * 60 * 1000)
+    return p + '.' + capB64(capHm('sig', p)).slice(0, 22)
+}
+function capParse(tok) {
+    const m = /^([A-Za-z0-9_-]{12})\.(\d{13})\.([A-Za-z0-9_-]{22})$/.exec(String(tok || ''))
+    if (!m) return null
+    const p = m[1] + '.' + m[2]
+    const a = Buffer.from(m[3]), b = Buffer.from(capB64(capHm('sig', p)).slice(0, 22))
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null
+    if (+m[2] < Date.now()) return null
+    return { p, nonce: m[1], exp: +m[2] }
+}
+function capAnswer(p) {
+    const h = capHm('ans', p)
+    let s = ''
+    for (let i = 0; i < 5; i++) s += CAP_CHARS[h[i] % CAP_CHARS.length]
+    return s
+}
+function capCheck(tok, input) {
+    const t = capParse(tok)
+    if (!t || capUsed.has(t.nonce)) return false
+    capUsed.set(t.nonce, t.exp)                         // hangus, benar atau salah
+    return String(input || '').toUpperCase().replace(/[^A-Z0-9]/g, '') === capAnswer(t.p)
+}
+function capSvg(ans) {
+    const W = 190, H = 62, rnd = (a, b) => a + Math.random() * (b - a)
+    const pal = ['#16110f', '#d63a31', '#1f5fd1', '#0d8a4b', '#a63fa0']
+    let g = ''
+    for (let i = 0; i < 40; i++) g += `<circle cx="${rnd(0, W).toFixed(0)}" cy="${rnd(0, H).toFixed(0)}" r="${rnd(.8, 2.2).toFixed(1)}" fill="${pal[i % 5]}" opacity=".35"/>`
+    for (let i = 0; i < 4; i++) g += `<path d="M${rnd(0, 20).toFixed(0)} ${rnd(8, H - 8).toFixed(0)} C${rnd(40, 80).toFixed(0)} ${rnd(0, H).toFixed(0)} ${rnd(100, 140).toFixed(0)} ${rnd(0, H).toFixed(0)} ${rnd(170, W).toFixed(0)} ${rnd(8, H - 8).toFixed(0)}" stroke="${pal[(i + 1) % 5]}" stroke-width="${rnd(1.2, 2.4).toFixed(1)}" fill="none" opacity=".6"/>`
+    ;[...ans].forEach((c, i) => {
+        const x = 24 + i * 35 + rnd(-3, 3), y = 43 + rnd(-5, 5), r = rnd(-24, 24), sz = rnd(32, 40)
+        g += `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" font-size="${sz.toFixed(0)}" transform="rotate(${r.toFixed(1)} ${x.toFixed(1)} ${y.toFixed(1)})" text-anchor="middle" fill="${pal[(i * 2 + 1) % 5]}" stroke="#16110f" stroke-width="1.6" paint-order="stroke" style="font-family:Impact,'Arial Black',Haettenschweiler,sans-serif;font-weight:900">${c}</text>`
+    })
+    for (let i = 0; i < 3; i++) g += `<line x1="${rnd(0, 30).toFixed(0)}" y1="${rnd(6, H - 6).toFixed(0)}" x2="${rnd(160, W).toFixed(0)}" y2="${rnd(6, H - 6).toFixed(0)}" stroke="${pal[i * 2 % 5]}" stroke-width="1.4" opacity=".5"/>`
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"><rect width="${W}" height="${H}" fill="#fff6c8"/>${g}</svg>`
+}
+const capIps = new Map()
+function capLimit(req, res, next) {
+    const now = Date.now(), r = capIps.get(req.ip) || { n: 0, reset: now + 600000 }
+    if (now > r.reset) { r.n = 0; r.reset = now + 600000 }
+    capIps.set(req.ip, r)
+    if (++r.n > 150) return res.status(429).json({ error: 'terlalu sering' })
+    next()
+}
+setInterval(() => { const n = Date.now(); for (const [k, v] of capIps) if (v.reset < n) capIps.delete(k) }, 600000).unref()
+
+// ── Register ──────────────────────────────────────────────────────────────────
+const RESERVED_NAMES = ['admin', 'administrator', 'owner', 'root', 'system', 'support', 'staff', 'moderator', 'dhann']
+const regAttempts = new Map()
+function regLimit(req, res, next) {
+    const now = Date.now(), r = regAttempts.get(req.ip) || { n: 0, reset: now + 600000 }
+    if (now > r.reset) { r.n = 0; r.reset = now + 600000 }
+    regAttempts.set(req.ip, r)
+    if (r.n >= 8) return res.status(429).send(registerPage(`Kebanyakan percobaan! Coba lagi dalam ${Math.ceil((r.reset - now) / 60000)} menit.`))
+    req._reg = r
+    next()
+}
+setInterval(() => { const n = Date.now(); for (const [k, v] of regAttempts) if (v.reset < n) regAttempts.delete(k) }, 600000).unref()
+
 
 // request aktif disimpan per-async-context, supaya page() tahu siapa yang sedang login
 const { AsyncLocalStorage } = require('async_hooks')
@@ -271,6 +388,15 @@ const store = new FileStore(SESSION_FILE)
 process.on('exit', () => store.flush())
 
 app.set('trust proxy', 1)
+// header keamanan + blokir scraper (curl, wget, httrack, dll). Bisa dimatikan Owner di Setelan.
+app.use((req, res, next) => {
+    res.setHeader('X-Frame-Options', 'DENY')
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    res.setHeader('Referrer-Policy', 'same-origin')
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow')
+    if (req.method === 'GET' && SCRAPER_UA.test(req.headers['user-agent'] || '') && shieldOn()) return res.status(403).type('text').send('403')
+    next()
+})
 app.use(express.json({ limit: '1mb' }))
 app.use(express.urlencoded({ extended: true, limit: '1mb' }))
 app.use(session({
@@ -798,6 +924,7 @@ const themeMeta = theme => theme === 'dark' ? '<meta name="theme-color" content=
 
 // Intro sinematik: sinar, ledakan, huruf menghantam layar, lalu panel komik terbelah
 function introHTML(title, sub) {
+    if (getAnim() === 'koran') return ''
     const chars = [...title]
     const ie = (0.45 + chars.length * 0.07 + 1.1).toFixed(2)
     const sd = (0.45 + chars.length * 0.07 + 0.3).toFixed(2)
@@ -911,13 +1038,15 @@ const ROUTER_JS = `
   var WORDS={gunshot:['BANG!','BLAM!','DOR!'],burst:['BOOM!','KAPOW!','POW!'],slam:['WHAM!','SLAM!','THUD!'],flip:['FLIP!','FLOP!','WHIRR!'],curtain:['ZIP!','SWISH!','ZOOM!'],zoom:['VROOOM!','WHOOSH!','ZOOM!'],swipe:['SWOOSH!','ZING!','ZIP!'],pop:['POP!','POOF!','BLOP!']};
   var GUN='${GUN_SVG}';
   var R=Math.random,live=[],busy=false,G=null;
+  var NP=root.classList.contains('news-pending'),NI='';
+  try{NI=sessionStorage.getItem('newsIn')||'';sessionStorage.removeItem('newsIn')}catch(e){}
   function rr(a,b){return a+R()*(b-a)}
   function sgn(){return R()<.5?-1:1}
   function VW(){return window.innerWidth}
   function VH(){return window.innerHeight}
   function later(ms,fn){return setTimeout(fn,ms/SPD)}
   function clampv(v,a,b){return Math.max(a,Math.min(b,v))}
-  function restore(){live.forEach(function(a){try{a.cancel()}catch(e){}});live=[];busy=false;root.classList.remove('leaving','pfx')}
+  function restore(){live.forEach(function(a){try{a.cancel()}catch(e){}});live=[];busy=false;root.classList.remove('leaving','pfx','news-pending');var nw=document.querySelectorAll('.news');for(var i=0;i<nw.length;i++)nw[i].remove()}
 
   /* ── SFX: suara disintesis langsung (tanpa file) ── */
   var AC=null,MG=null,NB=null;
@@ -1253,6 +1382,90 @@ const ROUTER_JS = `
     return o.el.animate(kf,{duration:dur/SPD,delay:d/SPD,easing:ease,fill:out?'forwards':'backwards'});
   }
 
+  /* ── Transisi Koran: koran terbit, digunting, di-zoom jadi UI baru ── */
+  var NT={login:'MASUK',register:'DAFTAR',dashboard:'DASHBOARD',functions:'FUNCTION','add-func':'TAMBAH FUNC',apikeys:'API KEYS',maintenance:'MAINTENANCE',backup:'BACKUP',users:'USER & ROLE',settings:'SETELAN',logout:'SAMPAI JUMPA!',_welcome:'SELAMAT DATANG!',_registered:'AKUN JADI!'};
+  var HL=['EXTRA! EXTRA!<br>UI BARU TERBIT!','BREAKING NEWS!<br>TAMPILAN BARU!','HOT NEWS!<br>HALAMAN BARU!'];
+  var BL='<g transform="translate(26 22)"><path d="M0 -2.5L38 1L0 4Z" fill="#e4eaf0" stroke="#16110f" stroke-width="2.4" stroke-linejoin="round"/><path d="M0 0L-9 -4" stroke="#16110f" stroke-width="4.5" stroke-linecap="round"/><circle cx="-15" cy="-6" r="6.5" fill="#ff5148" stroke="#16110f" stroke-width="3"/></g>';
+  function nesc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+  function newsTitle(dest){var p=String(dest||location.pathname).split('?')[0].split('/').filter(Boolean);return NT[p[1]||'']||'UPDATE!'}
+  function newsHTML(t){
+    var ds='';try{ds=new Date().toLocaleDateString('id-ID',{weekday:'long',day:'numeric',month:'short',year:'numeric'})}catch(e){}
+    var n=t.length,fs=n<=8?60:n<=11?50:n<=14?40:32;
+    return '<div class="news-dim"></div><div class="news-paper"><div class="np-mast">THE WA-API TIMES</div>'
+      +'<div class="np-date"><span>'+nesc(ds)+'</span><span>EDISI SPESIAL</span><span>HARGA: GRATIS</span></div>'
+      +'<div class="np-hl">'+HL[(R()*HL.length)|0]+'</div><div class="np-hole"></div>'
+      +'<div class="np-clip" style="--tf:'+fs+'px"><span class="npc-tag">BERITA UTAMA</span><b class="npc-t">'+nesc(t)+'</b><span class="npc-sub">UI BARU TERBIT!</span><span class="npc-ui"><i></i><i></i><i></i></span></div>'
+      +'<div class="np-cols"><i></i><i></i><i></i></div>'
+      +'<svg class="np-cut" viewBox="0 0 520 600"><rect class="np-cutrect" pathLength="100"/></svg>'
+      +'<div class="np-sc"><svg class="sa" viewBox="0 0 64 44">'+BL+'</svg><svg class="sb" viewBox="0 0 64 44">'+BL+'</svg></div></div>';
+  }
+  function sfxSnip(){burstN('highpass',3500,.05,.45);tone('triangle',2600,1700,.05,.22)}
+  function sfxZoomUp(){whoosh(true,.65,.95);tone('sine',180,900,.55,.28)}
+  function nA(el,kf,o){var a=el.animate(kf,o);live.push(a);return a}
+
+  function newsOut(dest,done){
+    var title=newsTitle(dest),k=Math.min(VW()*.94/528,VH()*.86/608,1.25),rp=-3+R()*2-1;
+    var N=document.createElement('div');N.className='news';N.setAttribute('aria-hidden','true');N.innerHTML=newsHTML(title);document.body.appendChild(N);
+    var dim=N.querySelector('.news-dim'),paper=N.querySelector('.news-paper'),clip=N.querySelector('.np-clip'),
+        rect=N.querySelector('.np-cutrect'),sc=N.querySelector('.np-sc');
+    var base='scale('+k+') rotate('+rp+'deg)';
+    paper.style.transform=base;sc.style.opacity='0';
+    nA(dim,[{opacity:0},{opacity:1}],{duration:260/SPD});
+    whoosh(true,.55,.8);later(300,function(){tone('triangle',520,300,.2,.3)});
+    var a1=nA(paper,[{transform:'scale(0) rotate(-720deg)',opacity:0},{transform:base,opacity:1}],{duration:700/SPD,easing:'cubic-bezier(.2,.9,.3,1.1)'});
+    a1.onfinish=function(){thump(.7,130);later(280,cut)};
+
+    function cut(){
+      var cl=clip.offsetLeft,ct=clip.offsetTop,cw=clip.offsetWidth,ch=clip.offsetHeight;
+      rect.setAttribute('x',cl);rect.setAttribute('y',ct);rect.setAttribute('width',cw);rect.setAttribute('height',ch);
+      var per=2*(cw+ch),f1=cw/per,f2=(cw+ch)/per,f3=(2*cw+ch)/per,e=.025,x0=cl,y0=ct,x1=cl+cw,y1=ct+ch;
+      function pt(x,y,r,o){return {transform:'translate('+(x-26)+'px,'+(y-22)+'px) rotate('+r+'deg)',offset:o}}
+      sc.style.opacity='1';
+      var T=1000;
+      var sa=nA(sc,[pt(x0,y0,0,0),pt(x1,y0,0,f1),pt(x1,y0,90,f1+e),pt(x1,y1,90,f2),pt(x1,y1,180,f2+e),pt(x0,y1,180,f3),pt(x0,y1,270,f3+e),pt(x0,y0,270,1)],{duration:T/SPD,easing:'linear',fill:'forwards'});
+      nA(rect,[{strokeDashoffset:100},{strokeDashoffset:0}],{duration:T/SPD,easing:'linear',fill:'forwards'});
+      var iv=setInterval(sfxSnip,130/SPD);
+      sa.onfinish=function(){clearInterval(iv);sfxSnip();drop()};
+    }
+    function drop(){
+      nA(sc,[{opacity:1},{opacity:0}],{duration:200/SPD,fill:'forwards'});
+      zap(.35);
+      var cw=clip.offsetWidth,ch=clip.offsetHeight,br=clip.getBoundingClientRect(),cx=br.left+br.width/2,cy=br.top+br.height/2;
+      var f=clip.cloneNode(true);f.className='np-clip np-fly';f.style.cssText='width:'+cw+'px;height:'+ch+'px;--tf:'+clip.style.getPropertyValue('--tf');
+      N.appendChild(f);clip.style.visibility='hidden';
+      var tx=cx-cw/2,ty=cy-ch/2,S=Math.max(VW()/cw,VH()/ch)*1.08;
+      var s0='translate('+tx+'px,'+ty+'px) scale('+k+') rotate('+rp+'deg)';
+      var s1='translate('+tx+'px,'+(ty-18)+'px) scale('+(k*1.07)+') rotate('+(rp-4)+'deg)';
+      var s2='translate('+(VW()/2-cw/2)+'px,'+(VH()/2-ch/2)+'px) scale('+S+') rotate(0deg)';
+      f.style.transform=s2;
+      var l=nA(f,[{transform:s0},{transform:s1}],{duration:300/SPD,easing:'ease-out',fill:'forwards'});
+      thump(.5,170);
+      l.onfinish=function(){
+        sfxZoomUp();
+        nA(paper,[{opacity:1,transform:base},{opacity:0,transform:'scale('+(k*2.4)+') rotate('+(rp*2)+'deg)'}],{duration:620/SPD,easing:'ease-in',fill:'forwards'});
+        [].forEach.call(f.querySelectorAll('.npc-tag,.npc-ui,.npc-sub'),function(el){nA(el,[{opacity:1},{opacity:0}],{duration:420/SPD,fill:'forwards'})});
+        var z=nA(f,[{transform:s1},{transform:s2}],{duration:720/SPD,easing:'cubic-bezier(.7,0,.25,1)',fill:'forwards'});
+        z.onfinish=function(){done()};
+      };
+    }
+  }
+
+  /* halaman baru: yang tadi di-zoom pecah, UI baru muncul */
+  function newsReveal(title,cb){
+    var N=document.createElement('div');N.className='news news-in';N.setAttribute('aria-hidden','true');
+    N.innerHTML='<div class="ni-bg"><div class="ni-rays"></div><b class="ni-t">'+nesc(title||'WA-API!')+'</b></div>';
+    document.body.appendChild(N);
+    var old=document.querySelectorAll('.news:not(.news-in)');for(var i=0;i<old.length;i++)old[i].remove();
+    root.classList.remove('news-pending');
+    var bg=N.firstChild,tt=bg.querySelector('.ni-t'),pg=document.querySelector('.wrap,.login-wrap'),ended=false;
+    if(pg)nA(pg,[{transform:'scale(.88)',opacity:.3},{transform:'none',opacity:1}],{duration:800/SPD,delay:140/SPD,easing:'cubic-bezier(.2,.9,.3,1)',fill:'backwards'});
+    nA(tt,[{transform:'rotate(-2deg) scale(1)'},{transform:'rotate(-2deg) scale(1.12)',offset:.3},{transform:'rotate(2deg) scale(3)'}],{duration:760/SPD,delay:120/SPD,easing:'ease-in',fill:'forwards'});
+    var a=nA(bg,[{opacity:1,transform:'scale(1)'},{opacity:1,offset:.3},{opacity:0,transform:'scale(1.8)'}],{duration:760/SPD,delay:120/SPD,easing:'ease-in',fill:'forwards'});
+    whoosh(false,.55,.7);later(420,function(){ding(.4)});
+    function fin(){if(ended)return;ended=true;N.remove();if(cb)cb()}
+    a.onfinish=fin;setTimeout(fin,1800/SPD);
+  }
+
   /* ── Keluar: semua elemen berpencar (atau ditembak) ── */
   function runOut(items,ctx,ox,oy,done){
     var ps=[];
@@ -1268,10 +1481,16 @@ const ROUTER_JS = `
     items.forEach(function(o,i){o.i=i;o.key=keyOf(o,ctx)});
     runOut(items,ctx,ox,oy,done);
   }
-  function go(ox,oy,fn){
+  function go(ox,oy,fn,dest){
     if(busy)return;busy=true;
     var fired=false;
     function fin(){if(fired)return;fired=true;fn()}
+    if(STYLE==='koran'){
+      try{newsOut(dest,function(){try{sessionStorage.setItem('newsIn',newsTitle(dest))}catch(e){}fin()})}catch(e){fin()}
+      setTimeout(fin,4200/SPD);
+      setTimeout(function(){if(document.querySelector('.news'))restore()},9000);
+      return;
+    }
     try{root.classList.add('leaving');leave(ox,oy,fin)}catch(e){fin()}
     setTimeout(fin,(1100+260*STG)/SPD+500);
     setTimeout(function(){if(root.classList.contains('leaving'))restore()},9000);
@@ -1280,6 +1499,11 @@ const ROUTER_JS = `
   /* ── Coba gaya langsung di halaman ini (tanpa pindah halaman) ── */
   function preview(style,ox,oy){
     if(busy||root.classList.contains('fx-off'))return;
+    if(style==='koran'){
+      var pk=STYLE;STYLE='koran';busy=true;
+      try{newsOut('/panel/settings',function(){newsReveal('SETELAN',function(){busy=false;STYLE=pk})})}catch(e){busy=false;STYLE=pk;restore()}
+      return;
+    }
     var prev=STYLE;STYLE=style;busy=true;
     var items=collect(true),ctx={x:ox,y:oy};
     function fin(){root.classList.remove('pfx');busy=false;STYLE=prev}
@@ -1312,6 +1536,7 @@ const ROUTER_JS = `
     });
   }
   function enter(){
+    if(STYLE==='koran')return;
     if(document.querySelector('.login-wrap'))return;
     var hi=root.classList.contains('has-intro');
     var base=hi?(parseFloat(cs.getPropertyValue('--ie'))||0)*1000/SPD:0;
@@ -1373,10 +1598,10 @@ const ROUTER_JS = `
 
   addEventListener('pageshow',function(e){if(e.persisted)restore()});
   try{setupReveal(!OFF)}catch(e){}
-  if(OFF)return;
+  if(OFF){root.classList.remove('news-pending');return}
 
   /* ── Login: UI login berpencar dulu, baru intro di dashboard ── */
-  var lf=document.getElementById('loginForm');
+  var lf=document.getElementById('loginForm')||document.getElementById('registerForm');
   if(lf)lf.addEventListener('submit',function(e){
     e.preventDefault();e.stopPropagation();
     if(busy)return;
@@ -1388,9 +1613,10 @@ const ROUTER_JS = `
       box.classList.remove('shake');void box.offsetWidth;box.classList.add('shake');zap(.4);
     }
     fetch(lf.action,{method:'POST',body:new URLSearchParams(new FormData(lf)),credentials:'same-origin',redirect:'manual'}).then(function(r){
-      if(r.type==='opaqueredirect'||r.redirected){go(ox,oy,function(){location.href='/panel/dashboard?welcome=1'});return}
+      if(r.type==='opaqueredirect'||r.redirected){go(ox,oy,function(){location.href='/panel/dashboard?welcome=1'},lf.id==='registerForm'?'/panel/_registered':'/panel/_welcome');return}
       return r.text().then(function(h){
         var d=new DOMParser().parseFromString(h,'text/html'),al=d.querySelector('.alert-danger span');
+        var nc=d.querySelector('.captcha-box'),oc=lf.querySelector('.captcha-box');if(nc&&oc)oc.innerHTML=nc.innerHTML;
         showErr(al?al.textContent:'Gagal masuk, coba lagi.');
       });
     }).catch(function(){HTMLFormElement.prototype.submit.call(lf)});
@@ -1406,14 +1632,15 @@ const ROUTER_JS = `
     if(u.pathname===location.pathname&&u.search===location.search)return;
     var ox=e.clientX,oy=e.clientY;
     if(!ox&&!oy){var b=a.getBoundingClientRect();ox=b.left+b.width/2;oy=b.top+b.height/2}
-    e.preventDefault();go(ox,oy,function(){location.href=u.href});
+    e.preventDefault();go(ox,oy,function(){location.href=u.href},u.pathname);
   });
   document.addEventListener('submit',function(e){
     if(e.defaultPrevented)return;
     var f=e.target;if(!(f instanceof HTMLFormElement)||f.target)return;
     var sbm=e.submitter||f,b=sbm.getBoundingClientRect();
-    e.preventDefault();go(b.left+b.width/2,b.top+b.height/2,function(){HTMLFormElement.prototype.submit.call(f)});
+    e.preventDefault();go(b.left+b.width/2,b.top+b.height/2,function(){HTMLFormElement.prototype.submit.call(f)},location.pathname);
   });
+  if(NP){try{newsReveal(NI||'WA-API!',null)}catch(e){root.classList.remove('news-pending')}}
   try{enter()}catch(e){root.classList.remove('pfx')}
 })();
 `
@@ -1487,8 +1714,9 @@ ${themeMeta(ui.theme)}
 <title>${esc(title)} — WA-API Panel</title>
 <link rel="icon" href="${FAVICON}">
 <script>try{var h=document.documentElement;if(h.hasAttribute('data-visitor')){var t=localStorage.getItem('wa-theme');if(t==='auto'||t==='light'||t==='dark')h.dataset.theme=t;var q=localStorage.getItem('wa-sfx');if(q==='on'||q==='off')h.dataset.sfx=q}}catch(e){}</script>
+${NEWS_HEAD}
 ${FONTS}
-<style>${CSS}</style>
+<style>${CSS}${CSS_EXTRA}</style>
 </head><body>
 <div class="bgfx" aria-hidden="true">${cube(56)}${cube(40)}${cube(66)}</div>
 <div class="wrap">
@@ -1498,13 +1726,14 @@ ${FONTS}
       <div><b>WA-API!</b><small>MAKLOWHH Admin</small></div>
     </div>
     <div class="nav">${nav}</div>
-    <div class="side-foot"><div class="pill"><i class="bd"></i><span>${who}</span></div></div>
+    <div class="side-foot"><button class="btn btn-ghost btn-sm cm-side" type="button" data-cm-open>${ic('chat', 17)}Contact Us</button><div class="pill"><i class="bd"></i><span>${who}</span></div></div>
   </nav>
   <div class="main">
     <div class="topbar">
       <h1>${esc(title)}</h1>
       <div class="top-right">
         <span id="clk"></span>
+        <button class="btn btn-ghost btn-sm cm-top" type="button" data-cm-open title="Contact Us" aria-label="Contact Us">${ic('chat', 17)}</button>
         <button class="btn btn-ghost btn-sm" id="themeBtn" type="button" title="Tema: ikuti perangkat, terang, atau gelap (klik untuk ganti)" aria-label="Ganti tema">${themeIcons()}</button>
         <button class="btn btn-ghost btn-sm" id="sfxBtn" type="button" title="Suara efek: nyala atau mati" aria-label="Suara efek">${sfxIcons()}</button>
         <a href="/panel/logout" class="btn btn-ghost btn-sm">${ic('logout', 17)}Keluar</a>
@@ -1519,7 +1748,8 @@ ${FONTS}
   <div class="bn-list">${bItems.map(([id, icon, text]) => `<a class="bn-item${bAct === id ? ' active' : ''}" href="/panel/${id}" aria-label="${text}">${ic(icon, 24)}<span>${text}</span></a>`).join('')}</div>
 </nav>
 <svg class="waitburst" viewBox="0 0 100 100" aria-hidden="true"><polygon points="${burstPts(10, 47, 30)}" fill="#ffd93d" stroke="#16110f" stroke-width="6" stroke-linejoin="round"/></svg>
-<script>${BNAV_JS}</script>
+<script>${OB(BNAV_JS)}</script>
+${contactModal()}
 <div class="modal" id="modal" onclick="if(event.target===this)closeModal()">
   <div class="modal-box">
     <div class="modal-title" id="modal-title">Yakin?</div>
@@ -1537,43 +1767,326 @@ function closeModal(){document.getElementById('modal').classList.remove('open')}
 function copyText(t,btn){navigator.clipboard.writeText(t).then(function(){var o=btn.innerHTML;btn.textContent='Tersalin!';setTimeout(function(){btn.innerHTML=o},1500)})}
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal()});
 (function clk(){var el=document.getElementById('clk');if(el)el.textContent=new Date().toLocaleTimeString('id-ID');setTimeout(clk,1000)})();
-${TILT_JS}${FX_JS}${ROUTER_JS}${THEME_JS}
+${OB(TILT_JS)}${OB(FX_JS)}${OB(ROUTER_JS)}${OB(THEME_JS)}
 </script>
+<script>${OB(CONTACT_JS)}</script>
+${shieldTag()}
 </body></html>`
 }
 
-function loginPage(err = '') {
-    const ui    = getUi()
-    const intro = err ? '' : introHTML('WA-API!', 'ADMIN PANEL')
-    const ieM   = /data-ie="([\d.]+)"/.exec(intro)
-    const hc    = [htmlClass(ui), ieM ? 'has-intro' : ''].filter(Boolean).join(' ')
-    const hs    = `--stagger:${ui.stagger}ms;--spd:${ui.speed}` + (ieM ? `;--ie:${ieM[1]}s` : '')
+// ── Ikon tambahan ─────────────────────────────────────────────────────────────
+Object.assign(ICONS, {
+    chat:    '<path d="M4 5h16v11H9l-5 4z"/><path d="M8 9h8M8 12.5h5"/>',
+    refresh: '<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>',
+    eye:     '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+    eyeoff:  '<path d="M3 3l18 18M10.6 6.2A9.7 9.7 0 0 1 12 6c6 0 10 6 10 6a17 17 0 0 1-3.2 3.9M6.1 7.6A16 16 0 0 0 2 12s4 6 10 6a9.6 9.6 0 0 0 3.4-.6"/>',
+    send:    '<path d="M21 3L2 11l7 3 3 7z"/><path d="M9 14L21 3"/>',
+    ext:     '<path d="M14 4h6v6M20 4l-9 9M18 14v6H4V6h6"/>',
+    phone:   '<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A15 15 0 0 1 3 6a2 2 0 0 1 2-2z"/>',
+    mega:    '<path d="M3 10v4l11 5V5z"/><path d="M14 8a4 4 0 0 1 0 8M6 14l1 5h3"/>',
+})
+
+const CSS_EXTRA = `
+/* ── Judul halaman: stiker komik 3D ── */
+.topbar h1{position:relative;display:inline-block;isolation:isolate;margin-left:14px;padding:6px 4px 3px;font-size:34px;line-height:1.02;letter-spacing:2.5px;text-transform:uppercase;color:#fff;-webkit-text-stroke:3px var(--ink);paint-order:stroke fill;text-shadow:3px 3px 0 var(--ink),4px 5px 0 var(--ink);transform:rotate(-1.5deg)}
+.topbar h1::before{content:'';position:absolute;z-index:-1;inset:-4px -16px -6px -16px;background-color:var(--yellow);background-image:radial-gradient(rgba(22,17,15,.24) 1.4px,transparent 1.8px);background-size:9px 9px;border:3px solid var(--ink);border-radius:8px;transform:skewX(-9deg);box-shadow:4px 4px 0 var(--ink)}
+.cm-side{width:100%;margin-bottom:10px}
+.cm-top{display:none}
+
+/* ── Transisi koran ── */
+html.news-pending{background:#ffd93d}
+html.news-pending body{visibility:hidden}
+.news{position:fixed;inset:0;z-index:2000;overflow:hidden;visibility:visible;cursor:progress}
+.news-dim{position:absolute;inset:0;background:radial-gradient(circle at 50% 45%,rgba(22,17,15,.5),rgba(8,6,14,.93))}
+.news-paper{position:absolute;left:50%;top:50%;translate:-50% -50%;width:528px;height:608px;background-color:#f3ead0;background-image:radial-gradient(rgba(22,17,15,.09) 1px,transparent 1.5px),linear-gradient(115deg,rgba(255,255,255,.4),rgba(120,90,30,.14));background-size:5px 5px,100% 100%;border:4px solid #16110f;box-shadow:12px 14px 0 #16110f;color:#16110f;overflow:hidden;font-family:var(--body)}
+.np-mast{position:absolute;left:18px;right:18px;top:12px;height:70px;text-align:center;border-bottom:5px double #16110f;font-family:var(--head);font-size:46px;letter-spacing:4px;line-height:62px;white-space:nowrap}
+.np-date{position:absolute;left:18px;right:18px;top:88px;height:22px;display:flex;justify-content:space-between;align-items:center;font-size:11px;font-weight:900;letter-spacing:1px;text-transform:uppercase;border-bottom:2px solid #16110f}
+.np-hl{position:absolute;left:18px;right:18px;top:118px;height:104px;display:flex;align-items:center;justify-content:center;text-align:center;font-family:var(--head);font-size:44px;line-height:1.02;letter-spacing:2px;color:#d63a31;-webkit-text-stroke:1.5px #16110f;paint-order:stroke fill;text-shadow:3px 3px 0 #16110f}
+.np-hole,.np-clip{position:absolute;left:26px;right:26px;top:236px;height:196px}
+.np-hole{background:#c9bd96;box-shadow:inset 5px 6px 0 rgba(22,17,15,.35)}
+.np-clip{background-color:#ffd93d;background-image:radial-gradient(rgba(22,17,15,.2) 1.6px,transparent 2px);background-size:12px 12px;border:3px dashed #16110f;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;overflow:hidden}
+.npc-tag{position:absolute;left:10px;top:8px;background:#16110f;color:#ffd93d;font-family:var(--head);font-size:14px;letter-spacing:2px;padding:1px 8px;transform:rotate(-3deg)}
+.npc-t{font-family:var(--head);font-weight:400;font-size:var(--tf,56px);line-height:1;letter-spacing:2px;color:#fff;-webkit-text-stroke:3px #16110f;paint-order:stroke fill;text-shadow:4px 4px 0 #16110f;text-align:center;padding:0 10px}
+.npc-sub{font-family:var(--head);font-size:18px;letter-spacing:3px;background:#16110f;color:#ffd93d;padding:0 12px;transform:rotate(-1.5deg)}
+.npc-ui{position:absolute;right:10px;bottom:8px;display:flex;gap:5px}
+.npc-ui i{width:22px;height:16px;border:2px solid #16110f;background:#ff7ac6;border-radius:3px}
+.npc-ui i:nth-child(2){background:#3d8bff}.npc-ui i:nth-child(3){background:#3ddc84}
+.np-cols{position:absolute;left:18px;right:18px;top:450px;bottom:16px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+.np-cols i{background:repeating-linear-gradient(#16110f 0 2px,transparent 2px 7px);opacity:.5}
+.np-cut{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.np-cutrect{fill:none;stroke:#ff5148;stroke-width:4;stroke-dasharray:100;stroke-dashoffset:100}
+.np-sc{position:absolute;left:0;top:0;width:64px;height:44px;transform-origin:26px 22px;pointer-events:none;filter:drop-shadow(2px 3px 0 rgba(22,17,15,.45))}
+.np-sc svg{position:absolute;left:0;top:0;width:64px;height:44px;transform-origin:26px 22px;overflow:visible}
+.np-sc .sa{animation:snipA .16s ease-in-out infinite alternate}
+.np-sc .sb{animation:snipB .16s ease-in-out infinite alternate}
+@keyframes snipA{from{transform:rotate(-11deg)}to{transform:rotate(3deg)}}
+@keyframes snipB{from{transform:rotate(11deg)}to{transform:rotate(-3deg)}}
+.np-fly{right:auto;top:0;left:0;margin:0;border-style:solid;box-shadow:6px 8px 0 #16110f;z-index:3;transform-origin:50% 50%}
+.news-in .ni-bg{position:absolute;inset:0;background-color:#ffd93d;background-image:radial-gradient(rgba(22,17,15,.22) 2px,transparent 2.5px);background-size:16px 16px;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.ni-rays{position:absolute;left:50%;top:50%;width:200vmax;height:200vmax;margin:-100vmax 0 0 -100vmax;background:repeating-conic-gradient(rgba(255,255,255,.5) 0 5deg,transparent 5deg 10deg);animation:apSpin 6s linear infinite}
+.ni-t{position:relative;font-family:var(--head);font-weight:400;font-size:clamp(46px,13vw,110px);letter-spacing:3px;color:#fff;-webkit-text-stroke:4px #16110f;paint-order:stroke fill;text-shadow:7px 7px 0 #16110f;text-align:center;line-height:1;padding:0 16px;transform:rotate(-2deg)}
+.mini[data-s="koran"] i{display:none}
+.mini[data-s="koran"]::before{content:'EXTRA!';position:absolute;left:8%;top:12%;width:50%;height:76%;background:#f3ead0;border:3px solid var(--ink);box-shadow:3px 3px 0 var(--ink);display:flex;justify-content:center;padding-top:4px;font-family:var(--head);font-size:20px;letter-spacing:1px;color:var(--red);transform:rotate(-5deg)}
+.mini[data-s="koran"]::after{content:'';position:absolute;right:9%;top:30%;width:32%;height:44%;background:var(--yellow);border:3px dashed var(--ink)}
+.sty-card.on .mini[data-s="koran"]::after,.sty-card:hover .mini[data-s="koran"]::after{animation:mKoran 2.6s infinite}
+@keyframes mKoran{0%,30%{transform:none;opacity:1}65%{transform:scale(1.25) rotate(5deg);opacity:1}100%{transform:scale(3);opacity:0}}
+
+/* ── Login & register ── */
+.login-wrap.ap{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);padding:0;align-items:stretch;perspective:none}
+.ap-poster{position:relative;overflow:hidden;background-color:var(--yellow);background-image:radial-gradient(rgba(22,17,15,.2) 2px,transparent 2.5px);background-size:16px 16px;border-right:5px solid var(--ink);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:44px 28px;color:var(--on)}
+.ap-poster>*{position:relative}
+.ap-poster>.ap-rays{position:absolute;left:50%;top:46%;width:240vmax;height:240vmax;margin:-120vmax 0 0 -120vmax;background:repeating-conic-gradient(rgba(255,255,255,.42) 0 6deg,transparent 6deg 12deg);animation:apSpin 50s linear infinite;pointer-events:none}
+@keyframes apSpin{to{transform:rotate(360deg)}}
+.ap-hero{display:flex;align-items:center;justify-content:center}
+.ap-hero .scene{margin:0}
+.ap-pow{position:absolute;right:-84px;top:-34px;width:100px;transform:rotate(12deg);filter:drop-shadow(4px 4px 0 var(--ink));animation:bob 2.6s ease-in-out infinite}
+.ap-title{font-family:var(--head);font-weight:400;font-size:clamp(54px,8vw,104px);line-height:.95;letter-spacing:3px;color:#fff;-webkit-text-stroke:4px var(--ink);paint-order:stroke fill;text-shadow:6px 6px 0 var(--ink);transform:rotate(-3deg);text-align:center}
+.ap-tag{max-width:380px;text-align:center;font-weight:900;font-size:16px;background:#fff;color:var(--on);border:3px solid var(--ink);border-radius:12px;padding:10px 14px;box-shadow:5px 5px 0 var(--ink);transform:rotate(1.5deg)}
+.ap-stick{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+.ap-stick b{font-family:var(--head);font-weight:400;font-size:20px;letter-spacing:1.5px;padding:2px 14px;border:3px solid var(--ink);border-radius:30px;box-shadow:3px 3px 0 var(--ink);color:var(--on)}
+.ap-stick b:nth-child(1){background:var(--pink);transform:rotate(-4deg)}
+.ap-stick b:nth-child(2){background:var(--green);transform:rotate(3deg)}
+.ap-stick b:nth-child(3){background:var(--blue);color:#fff;transform:rotate(-2deg)}
+.ap-poster>.ap-tape{position:absolute;left:-8%;width:116%;background:var(--ink);color:var(--yellow);font-family:var(--head);font-size:20px;letter-spacing:4px;padding:3px 0;overflow:hidden;white-space:nowrap}
+.ap-tape.t1{top:7%;transform:rotate(-5deg)}
+.ap-tape.t2{bottom:8%;transform:rotate(4deg);background:var(--red)!important;color:#fff!important}
+.ap-tape span{display:inline-block;animation:apTape 22s linear infinite}
+.ap-tape.t2 span{animation-direction:reverse}
+@keyframes apTape{to{transform:translateX(-50%)}}
+.ap-side{display:flex;align-items:center;justify-content:center;padding:28px 22px;perspective:1000px}
+.ap-card{max-width:430px;padding:22px 24px 24px}
+.ap-tabs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0 0 18px;padding:5px;background:var(--hover);border:3px solid var(--ink);border-radius:14px}
+.ap-tab{display:flex;align-items:center;justify-content:center;gap:6px;padding:6px 8px;border:2px solid transparent;border-radius:9px;font-family:var(--head);font-size:21px;letter-spacing:1.5px;font-weight:400;color:var(--fg);text-decoration:none}
+.ap-tab.on{background:var(--pink);color:var(--on);border-color:var(--ink);box-shadow:0 3px 0 var(--ink)}
+.ap-card h1{font-size:38px;text-align:center;line-height:1;margin-bottom:6px;color:#fff;-webkit-text-stroke:3px var(--ink);paint-order:stroke fill;text-shadow:3px 4px 0 var(--ink)}
+.pw-wrap{position:relative}
+.pw-wrap .form-input{padding-right:48px}
+.pw-eye{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:34px;height:34px;display:flex;align-items:center;justify-content:center;border:2px solid var(--ink);border-radius:8px;background:var(--yellow);color:var(--on);cursor:pointer}
+.pw-eye .eo{display:none}.pw-eye.on .ei{display:none}.pw-eye.on .eo{display:block}
+.cap-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.cap-img{display:block;height:56px;width:auto;max-width:calc(100% - 54px);border:3px solid var(--ink);border-radius:10px;background:#fff6c8;box-shadow:3px 3px 0 var(--ink);user-select:none;-webkit-user-drag:none}
+.cap-refresh{width:44px;height:44px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:3px solid var(--ink);border-radius:12px;background:var(--blue);color:#fff;cursor:pointer;box-shadow:0 4px 0 var(--ink)}
+.cap-refresh:active{transform:translateY(3px);box-shadow:none}
+.cap-refresh.spin .ic{animation:apSpin .5s linear}
+.cap-in{text-transform:uppercase;letter-spacing:4px;font-family:'Courier New',monospace;font-size:18px;text-align:center}
+.ap-btns{display:flex;gap:10px;margin-top:16px}
+.ap-btns .btn{flex:1}
+.ap-alt{text-align:center;margin-top:14px;font-size:13px;color:var(--muted)}
+@media(max-width:860px){
+  .login-wrap.ap{grid-template-columns:1fr}
+  .ap-poster{padding:30px 18px 52px;border-right:none;border-bottom:5px solid var(--ink);gap:6px}
+  .ap-tag,.ap-stick,.ap-tape.t2{display:none}
+  .ap-title{font-size:56px}
+  .ap-hero{transform:scale(.7);margin:-14px 0}
+  .ap-pow{width:70px;right:-56px;top:-22px}
+  .ap-side{padding:0 14px 28px;margin-top:-30px}
+}
+
+/* ── Contact Us ── */
+.cmodal{position:fixed;inset:0;z-index:260;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(10,8,16,.72);perspective:900px}
+.cmodal.open{display:flex}
+.cmodal.open .cm-box{animation:pop .35s cubic-bezier(.2,1.3,.4,1)}
+.cm-box{position:relative;width:100%;max-width:460px;max-height:92vh;overflow:auto;background:var(--panel);color:var(--fg);border:4px solid var(--ink);border-radius:16px;box-shadow:8px 8px 0 var(--ink);padding:20px}
+.cm-title{font-family:var(--head);font-size:34px;letter-spacing:2px;line-height:1;margin-bottom:14px;color:var(--red);text-shadow:2px 2px 0 var(--ink)}
+.cm-x{position:absolute;right:12px;top:12px;width:36px;height:36px;border:3px solid var(--ink);border-radius:10px;background:var(--red);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 3px 0 var(--ink)}
+.cm-tabs{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:5px;margin-bottom:14px;background:var(--hover);border:3px solid var(--ink);border-radius:14px}
+.cm-tab{display:flex;align-items:center;justify-content:center;gap:6px;padding:6px;border:2px solid transparent;border-radius:9px;background:transparent;color:var(--fg);font-family:var(--head);font-size:20px;letter-spacing:1.5px;cursor:pointer}
+.cm-tab.on{background:var(--yellow);color:var(--on);border-color:var(--ink);box-shadow:0 3px 0 var(--ink)}
+.cm-pane{display:none}
+.cm-pane.on{display:block;animation:flipin .35s cubic-bezier(.2,.9,.3,1.1) backwards}
+.cm-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:11px;margin-bottom:12px;border:3px solid var(--ink);border-radius:12px;background:var(--field);box-shadow:var(--shadow-sm)}
+.cm-info{flex:1 1 150px;min-width:0}
+.cm-info b{display:block;font-family:var(--head);font-weight:400;font-size:19px;letter-spacing:1px}
+.cm-val{display:block;font-family:'Courier New',monospace;font-size:13px;word-break:break-all;color:var(--muted)}
+.cm-act{display:flex;gap:8px;margin-left:auto}
+
+/* ── Anti-colong (hanya penghalang tampilan) ── */
+html.shield body{-webkit-user-select:none;user-select:none}
+html.shield input,html.shield textarea,html.shield select,html.shield .allow-copy{-webkit-user-select:text;user-select:text}
+html.shield img{-webkit-user-drag:none}
+
+@media(max-width:768px){
+  .topbar h1{font-size:23px;letter-spacing:1.5px;margin-left:12px;-webkit-text-stroke:2.5px var(--ink);text-shadow:2px 2px 0 var(--ink),3px 3px 0 var(--ink);max-width:62vw}
+  .cm-top{display:inline-flex}
+}
+`
+
+const AUTH_JS = `
+(function(){
+  document.addEventListener('click',function(e){
+    var t=e.target;if(!t||!t.closest)return;
+    var eye=t.closest('.pw-eye');
+    if(eye){var inp=eye.parentNode.querySelector('input');if(inp){var s=inp.type==='password';inp.type=s?'text':'password';eye.classList.toggle('on',s)}return}
+    var rf=t.closest('.cap-refresh');
+    if(rf){
+      var box=rf.closest('.captcha-box');if(!box)return;
+      rf.classList.remove('spin');void rf.offsetWidth;rf.classList.add('spin');
+      fetch('/panel/captcha-new',{credentials:'same-origin',cache:'no-store'}).then(function(r){return r.json()}).then(function(j){
+        if(!j||!j.t)return;
+        box.querySelector('input[name=ct]').value=j.t;
+        box.querySelector('.cap-img').src='/panel/captcha/'+j.t+'.svg';
+        var i=box.querySelector('.cap-in');if(i){i.value='';i.focus()}
+      }).catch(function(){});
+    }
+  });
+})();
+`
+const CONTACT_JS = `
+(function(){
+  var m=document.getElementById('cmodal');if(!m)return;
+  var last=null;
+  function open(){last=document.activeElement;m.classList.add('open');var c=m.querySelector('.cm-x');if(c)c.focus()}
+  function close(){m.classList.remove('open');if(last&&last.focus){try{last.focus()}catch(e){}}}
+  function tab(n){
+    [].forEach.call(m.querySelectorAll('.cm-tab'),function(b){var on=b.dataset.tab===n;b.classList.toggle('on',on);b.setAttribute('aria-selected',on?'true':'false')});
+    [].forEach.call(m.querySelectorAll('.cm-pane'),function(p){p.classList.toggle('on',p.dataset.pane===n)});
+  }
+  function copy(txt,btn){
+    function ok(){var o=btn.innerHTML;btn.textContent='Tersalin!';btn.classList.add('btn-mint');setTimeout(function(){btn.innerHTML=o;btn.classList.remove('btn-mint')},1400)}
+    function fb(){var ta=document.createElement('textarea');ta.value=txt;ta.setAttribute('readonly','');ta.style.cssText='position:fixed;left:-9999px;top:0;opacity:0';document.body.appendChild(ta);ta.select();try{document.execCommand('copy');ok()}catch(e){}ta.remove()}
+    if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(txt).then(ok,fb)}else{fb()}
+  }
+  document.addEventListener('click',function(e){
+    var t=e.target;if(!t||!t.closest)return;
+    if(t.closest('[data-cm-open]')){e.preventDefault();open();return}
+    if(!m.classList.contains('open'))return;
+    if(t===m||t.closest('.cm-x')){close();return}
+    var tb=t.closest('.cm-tab');if(tb){tab(tb.dataset.tab);return}
+    var cp=t.closest('[data-cc]');if(cp){copy(cp.dataset.cc,cp)}
+  });
+  document.addEventListener('keydown',function(e){if(e.key==='Escape'&&m.classList.contains('open'))close()});
+})();
+`
+const SHIELD_JS = `
+(function(){
+  var h=document.documentElement;h.classList.add('shield');
+  function ok(t){return !!(t&&t.closest&&t.closest('input,textarea,select,[contenteditable],.allow-copy'))}
+  document.addEventListener('contextmenu',function(e){if(!ok(e.target))e.preventDefault()});
+  ['copy','cut'].forEach(function(n){document.addEventListener(n,function(e){if(!ok(document.activeElement)&&!ok(e.target))e.preventDefault()})});
+  document.addEventListener('dragstart',function(e){e.preventDefault()});
+  document.addEventListener('selectstart',function(e){if(!ok(e.target))e.preventDefault()});
+  document.addEventListener('keydown',function(e){
+    var k=String(e.key||'').toLowerCase(),c=e.ctrlKey||e.metaKey;
+    if(e.key==='F12'||(c&&e.shiftKey&&(k==='i'||k==='j'||k==='c'||k==='k'))||(c&&(k==='u'||k==='s'))||(e.metaKey&&e.altKey&&(k==='i'||k==='u'||k==='j'))){e.preventDefault();e.stopPropagation()}
+  },true);
+  try{console.log('%cSTOP!','font:900 42px Impact;color:#ff5148;text-shadow:3px 3px #16110f');console.log('Source panel ini dilindungi.')}catch(e){}
+})();
+`
+
+// dipasang di <head>: kalau halaman ini tujuan transisi koran, sembunyikan dulu sampai overlay siap
+const NEWS_HEAD = `<script>try{var d=document.documentElement;if(d.dataset.anim==='koran'&&!d.classList.contains('fx-off')&&!(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches)){var n=sessionStorage.getItem('newsIn');if(!n&&d.hasAttribute('data-first')&&!sessionStorage.getItem('npFirst')){n='WA-API!';sessionStorage.setItem('npFirst','1');sessionStorage.setItem('newsIn',n)}if(n){d.classList.add('news-pending');setTimeout(function(){d.classList.remove('news-pending')},3000)}}}catch(e){}</script>`
+
+// ── Contact Us (tab WhatsApp & Telegram) ──────────────────────────────────────
+const contactRow = (icon, color, label, shown, copyVal, href) =>
+    `<div class="cm-row"><span class="ct-icon c-${color}">${ic(icon, 19)}</span><div class="cm-info"><b>${label}</b><span class="cm-val">${esc(shown)}</span></div><div class="cm-act"><button class="btn btn-sm btn-ghost" type="button" data-cc="${esc(copyVal)}">${ic('copy', 16)}Salin</button><a class="btn btn-sm btn-mint" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${ic('ext', 16)}Buka</a></div></div>`
+
+const contactModal = () => `<div class="cmodal" id="cmodal" role="dialog" aria-modal="true" aria-labelledby="cm-title">
+  <div class="cm-box">
+    <button class="cm-x" type="button" aria-label="Tutup">${ic('boom', 18)}</button>
+    <div class="cm-title" id="cm-title">CONTACT US</div>
+    <div class="cm-tabs" role="tablist">
+      <button class="cm-tab on" type="button" role="tab" data-tab="wa" aria-selected="true">${ic('phone', 17)}WhatsApp</button>
+      <button class="cm-tab" type="button" role="tab" data-tab="tg" aria-selected="false">${ic('send', 17)}Telegram</button>
+    </div>
+    <div class="cm-pane on" data-pane="wa">
+      ${contactRow('phone', 'green', 'Nomor WhatsApp', CONTACT.waShown, CONTACT.waNumber, 'https://wa.me/' + CONTACT.waNumber)}
+      ${contactRow('mega', 'pink', 'Saluran WhatsApp', CONTACT.waChannel.replace('https://', ''), CONTACT.waChannel, CONTACT.waChannel)}
+    </div>
+    <div class="cm-pane" data-pane="tg">
+      ${contactRow('send', 'blue', 'Telegram', CONTACT.tgShown, CONTACT.tgLink, CONTACT.tgLink)}
+    </div>
+  </div>
+</div>`
+
+const contactBtn = (cls = '') => `<button class="btn btn-ghost ${cls}" type="button" data-cm-open>${ic('chat', 18)}Contact Us</button>`
+
+// ── Captcha ───────────────────────────────────────────────────────────────────
+function captchaBox() {
+    const t = capNew()
+    return `<div class="form-group captcha-box">
+  <label class="form-label" for="cv">Captcha</label>
+  <div class="cap-row"><img class="cap-img" src="/panel/captcha/${t}.svg" width="190" height="62" alt="Kode captcha" draggable="false"><button class="cap-refresh" type="button" aria-label="Ganti kode captcha" title="Ganti kode">${ic('refresh', 20)}</button></div>
+  <input type="hidden" name="ct" value="${t}">
+  <input class="form-input cap-in" id="cv" name="cv" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="8" placeholder="KETIK KODE" required>
+</div>`
+}
+
+const pwField = (id, name, label, ac) => `<div class="form-group"><label class="form-label" for="${id}">${label}</label>
+  <div class="pw-wrap"><input class="form-input" id="${id}" name="${name}" type="password" autocomplete="${ac}" required><button class="pw-eye" type="button" aria-label="Lihat atau sembunyikan password">${ic('eye', 18).replace('class="ic"', 'class="ic ei"')}${ic('eyeoff', 18).replace('class="ic"', 'class="ic eo"')}</button></div></div>`
+
+// ── Halaman Login & Register ──────────────────────────────────────────────────
+function authPage(mode, err = '') {
+    const ui     = getUi()
+    const reg    = mode === 'register'
+    const closed = reg && !regOpen()
+    const intro  = (!reg && !err) ? introHTML('WA-API!', 'ADMIN PANEL') : ''
+    const ieM    = /data-ie="([\d.]+)"/.exec(intro)
+    const hc     = [htmlClass(ui), ieM ? 'has-intro' : ''].filter(Boolean).join(' ')
+    const hs     = `--stagger:${ui.stagger}ms;--spd:${ui.speed}` + (ieM ? `;--ie:${ieM[1]}s` : '')
+    const tape   = 'WA-API PANEL // ADMIN ONLY // COMIC 3D // '.repeat(12)
+    const tabs   = `<div class="ap-tabs"><a class="ap-tab${reg ? '' : ' on'}" href="/panel/login">${ic('lock', 18)}MASUK</a><a class="ap-tab${reg ? ' on' : ''}" href="/panel/register">${ic('sparkle', 18)}DAFTAR</a></div>`
+    const alert  = err ? `<div class="alert alert-danger">${ic('boom', 20)}<span>${esc(err)}</span></div>` : ''
+    const form = closed
+        ? `<div class="alert alert-warn">${ic('alert', 20)}<span>Pendaftaran sedang ditutup oleh Owner. Hubungi kami lewat Contact Us.</span></div>`
+        : reg
+        ? `<form id="registerForm" method="POST" action="/panel/register" autocomplete="off">
+  <div class="form-group"><label class="form-label" for="u">Username</label>
+  <input class="form-input" id="u" name="username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" minlength="3" maxlength="20" required>
+  <div class="hint">3-20 karakter: huruf, angka, atau underscore.</div></div>
+  ${pwField('p', 'password', 'Password', 'new-password')}
+  ${pwField('p2', 'password2', 'Ulangi Password', 'new-password')}
+  ${captchaBox()}
+  <button class="btn btn-primary" style="width:100%;font-size:21px" type="submit">${ic('sparkle', 20)}Daftar Sekarang!</button>
+</form>`
+        : `<form id="loginForm" method="POST" action="/panel/login">
+  <div class="form-group"><label class="form-label" for="u">Username</label>
+  <input class="form-input" id="u" name="username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" required></div>
+  ${pwField('p', 'password', 'Password', 'current-password')}
+  ${captchaBox()}
+  <button class="btn btn-primary" style="width:100%;font-size:21px" type="submit">${ic('lock', 20)}Masuk!</button>
+</form>`
     return `<!DOCTYPE html>
-<html lang="id" class="${hc}" style="${hs}" data-theme="auto" data-anim="${getAnim()}" data-sfx="on"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="id" class="${hc}" style="${hs}" data-theme="auto" data-anim="${getAnim()}" data-sfx="on" data-first><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 ${themeMeta('auto')}
-<title>Login — WA-API Panel</title>
+<title>${reg ? 'Daftar' : 'Login'} — WA-API Panel</title>
 <link rel="icon" href="${FAVICON}">
 <script>try{if(sessionStorage.getItem('intro')){document.documentElement.classList.remove('has-intro')}else{sessionStorage.setItem('intro','1')}}catch(e){}</script>
+${NEWS_HEAD}
 ${FONTS}
-<style>${CSS}</style></head>
-<body><div class="login-wrap"><div class="login-box tilt${err ? ' shake' : ''}" data-tilt="6">
-${cube(80, true)}
-<h1>WA-API!</h1>
-<div class="login-sub">Khusus admin. Orang lain dilarang masuk!</div>
-${err ? `<div class="alert alert-danger">${ic('boom', 20)}<span>${esc(err)}</span></div>` : ''}
-<form id="loginForm" method="POST" action="/panel/login">
-  <div class="form-group"><label class="form-label" for="u">Username</label>
-  <input class="form-input" id="u" name="username" type="text" autocomplete="username" required></div>
-  <div class="form-group"><label class="form-label" for="p">Password</label>
-  <input class="form-input" id="p" name="password" type="password" autocomplete="current-password" required></div>
-  <button class="btn btn-primary" style="width:100%;font-size:21px" type="submit">${ic('lock', 20)}Masuk!</button>
-</form>
-</div></div>
+<style>${CSS}${CSS_EXTRA}</style></head>
+<body><div class="login-wrap ap">
+  <aside class="ap-poster" aria-hidden="true">
+    <div class="ap-rays"></div>
+    <div class="ap-tape t1"><span>${tape}</span></div>
+    <div class="ap-hero">${cube(110, true)}${pow('NEW!', 'ap-pow')}</div>
+    <div class="ap-title">WA-API!</div>
+    <div class="ap-tag">Panel kontrol function, API key &amp; server. Versi komik 3D.</div>
+    <div class="ap-stick"><b>CEPAT</b><b>AMAN</b><b>3D!</b></div>
+    <div class="ap-tape t2"><span>${tape}</span></div>
+  </aside>
+  <main class="ap-side"><div class="login-box ap-card tilt${err ? ' shake' : ''}" data-tilt="4">
+    ${tabs}
+    <h1>${reg ? 'BIKIN AKUN!' : 'SELAMAT DATANG!'}</h1>
+    <div class="login-sub">${reg ? 'Daftar gratis. Akun baru berstatus Visitor (hanya lihat).' : 'Masuk dulu, baru bisa utak-atik panel!'}</div>
+    ${alert}
+    ${form}
+    <div class="ap-btns">${contactBtn()}</div>
+    <div class="ap-alt">${reg ? 'Sudah punya akun? <a href="/panel/login">Masuk</a>' : 'Belum punya akun? <a href="/panel/register">Daftar</a>'}</div>
+  </div></main>
+</div>
+${contactModal()}
 ${intro}
-<script>${TILT_JS}${FX_JS}${ROUTER_JS}</script></body></html>`
+<script>${OB(TILT_JS)}${OB(FX_JS)}${OB(ROUTER_JS)}</script>
+<script>${OB(AUTH_JS)}</script>
+<script>${OB(CONTACT_JS)}</script>
+${shieldTag()}
+</body></html>`
 }
+const loginPage    = (err = '') => authPage('login', err)
+const registerPage = (err = '') => authPage('register', err)
+
 
 const flash = (msg, err, warn) =>
     (msg ? `<div class="alert alert-success">${ic('check', 20)}<span>${esc(msg)}</span></div>` : '') +
@@ -1594,6 +2107,7 @@ app.get('/panel/login', (req, res) => {
 
 app.post('/panel/login', rateLimit, async (req, res) => {
     const { username, password } = req.body
+    if (!capCheck(req.body.ct, req.body.cv)) return res.send(loginPage('Captcha salah atau kedaluwarsa. Coba lagi.'))
     const data = loadData()
     const rec  = loginAttempts.get(req.ip) || { count: 0, reset: Date.now() + 300000 }
     const u    = (data.users || []).find(x => x.username.toLowerCase() === String(username || '').toLowerCase())
@@ -1606,6 +2120,44 @@ app.post('/panel/login', rateLimit, async (req, res) => {
     loginAttempts.delete(req.ip)
     req.session.loggedIn = true
     req.session.user = u.username
+    res.redirect('/panel/dashboard?welcome=1')
+})
+
+// ── Captcha & Register ────────────────────────────────────────────────────────
+app.get('/panel/captcha-new', capLimit, (req, res) => {
+    res.set('Cache-Control', 'no-store')
+    res.json({ t: capNew() })
+})
+app.get(/^\/panel\/captcha\/([A-Za-z0-9_.-]+)\.svg$/, capLimit, (req, res) => {
+    const t = capParse(req.params[0])
+    if (!t) return res.status(404).end()
+    res.set({ 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-store' }).send(capSvg(capAnswer(t.p)))
+})
+
+app.get('/panel/register', (req, res) => {
+    if (req.session?.loggedIn) return res.redirect('/panel/dashboard')
+    res.send(registerPage())
+})
+
+app.post('/panel/register', regLimit, async (req, res) => {
+    if (!regOpen()) return res.send(registerPage())
+    const rec = req._reg
+    const { username, password, password2, ct, cv } = req.body
+    if (!capCheck(ct, cv)) return res.send(registerPage('Captcha salah atau kedaluwarsa. Coba lagi.'))
+    rec.n++
+    const un = String(username || '').trim(), pw = String(password || '')
+    if (!/^[A-Za-z0-9_]{3,20}$/.test(un))       return res.send(registerPage('Username 3-20 karakter: huruf, angka, atau underscore.'))
+    if (RESERVED_NAMES.includes(un.toLowerCase())) return res.send(registerPage('Username itu tidak boleh dipakai.'))
+    if (pw.length < 8)                          return res.send(registerPage('Password minimal 8 karakter.'))
+    if (Buffer.byteLength(pw) > 72)             return res.send(registerPage('Password maksimal 72 karakter.'))
+    if (pw !== String(password2 || ''))         return res.send(registerPage('Password dan ulangi password tidak sama.'))
+    const hash = await bcrypt.hash(pw, 12)
+    const data = loadData()
+    if ((data.users || []).some(x => x.username.toLowerCase() === un.toLowerCase())) return res.send(registerPage('Username sudah dipakai.'))
+    data.users.push({ username: un, password: hash, role: 'visitor', ui: { ...UI_DEFAULT }, created: new Date().toISOString(), selfReg: true })
+    saveData(data)
+    req.session.loggedIn = true
+    req.session.user = un
     res.redirect('/panel/dashboard?welcome=1')
 })
 
@@ -2373,6 +2925,20 @@ ${owner ? `<div class="card">
     <button class="btn btn-primary" type="submit" style="margin-top:12px">${ic('save', 19)}Simpan Akses</button>
   </form>
 </div>` : ''}
+${owner ? `<div class="card">
+  ${cardTitle('lock', 'red', 'Keamanan & Pendaftaran')}
+  <form method="POST" action="/panel/settings/security">
+    <div class="toggle-row">
+      <div class="toggle-info"><h4>Pendaftaran akun</h4><p>Pengunjung bisa membuat akun lewat halaman Register. Akun baru otomatis role Visitor (hanya lihat). Naikkan role manual di Kelola User.</p></div>
+      <label class="toggle"><input type="checkbox" name="reg" ${regOpen() ? 'checked' : ''}><span class="toggle-slider"></span></label>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info"><h4>Anti-colong tampilan</h4><p>Blokir klik kanan, copy, F12, Ctrl+U, Ctrl+S, dan scraper (curl, wget, dll) untuk semua selain Owner. Ini cuma penghalang, bukan pengaman sejati.</p></div>
+      <label class="toggle"><input type="checkbox" name="shield" ${shieldOn() ? 'checked' : ''}><span class="toggle-slider"></span></label>
+    </div>
+    <button class="btn btn-primary" type="submit" style="margin-top:12px">${ic('save', 19)}Simpan</button>
+  </form>
+</div>` : ''}
 ${links ? `<div class="card">
   ${cardTitle('wrench', 'yellow', 'Menu Lain')}
   <div class="btn-group">${links}</div>
@@ -2451,9 +3017,17 @@ app.post('/panel/settings/anim', auth, need('users'), (req, res) => {
     const style = req.body.style
     if (!ANIM_STYLES[style]) return res.redirect('/panel/settings?err=' + encodeURIComponent('Gaya tidak valid'))
     const data = loadData()
-    data.anim = { style, v: 2 }
+    data.anim = { style, v: 3 }
     saveData(data)
     res.redirect('/panel/settings?msg=' + encodeURIComponent('Gaya transisi: ' + ANIM_STYLES[style][0]))
+})
+
+app.post('/panel/settings/security', auth, need('users'), (req, res) => {
+    const data = loadData()
+    data.reg    = { open: !!req.body.reg }
+    data.shield = { on: !!req.body.shield }
+    saveData(data)
+    res.redirect('/panel/settings?msg=' + encodeURIComponent('Keamanan & pendaftaran disimpan'))
 })
 
 app.post('/panel/settings/visitor', auth, need('users'), (req, res) => {
@@ -2492,6 +3066,7 @@ app.post('/panel/settings/clear-keys', auth, need('keys'), (req, res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 initData().then(() => {
+    if (JSO) { try { [TILT_JS, FX_JS, ROUTER_JS, THEME_JS, BNAV_JS, AUTH_JS, CONTACT_JS, SHIELD_JS].forEach(OB); console.log('[PANEL] JS browser di-obfuscate') } catch {} } else console.log('[PANEL] javascript-obfuscator belum terpasang, JS browser dikirim apa adanya')
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`[PANEL] Jalan di port ${PORT}`)
         console.log(`[PANEL] WA-API dir: ${WA_API_DIR}`)
